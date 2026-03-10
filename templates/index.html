@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador de Neveras Vorak Edge</title>
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    
+    <style>
+        body {
+            background-color: #f8f9fa;
+            min-height: 100vh;
+        }
+        .navbar-brand { font-weight: 600; }
+        .fridge-card { transition: transform 0.2s, box-shadow 0.2s; }
+        .fridge-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .fridge-card.active { border: 2px solid #0d6efd; }
+        .sensor-value { font-size: 2rem; font-weight: 700; font-family: 'Courier New', monospace; }
+        .door-indicator {
+            width: 60px; height: 60px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.5rem; transition: all 0.3s;
+        }
+        .door-open { background-color: #ffc107; color: #000; }
+        .door-closed { background-color: #198754; color: #fff; }
+        .inventory-locked { opacity: 0.5; pointer-events: none; }
+        .product-row { transition: background-color 0.2s; }
+        .product-row:hover { background-color: #f1f3f5; }
+        .loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); display: flex;
+            align-items: center; justify-content: center; z-index: 9999;
+        }
+        .temperature-cold { color: #0d6efd; }
+        .temperature-warm { color: #dc3545; }
+        .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; }
+
+        /* Modal overlay personalizado */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); z-index: 1040;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .modal-box {
+            z-index: 1050; width: 100%; max-width: 420px; padding: 1rem;
+        }
+
+        /* Estilos del modal de activación */
+        .activation-card {
+            border: none;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .activation-header {
+            background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+            padding: 2rem;
+            text-align: center;
+            color: white;
+        }
+        .activation-header .lock-icon {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            display: block;
+        }
+        .activation-body { padding: 2rem; }
+        .activation-body .form-control {
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            font-size: 1rem;
+            border: 2px solid #dee2e6;
+        }
+        .activation-body .form-control:focus {
+            border-color: #0d6efd;
+            box-shadow: 0 0 0 0.2rem rgba(13,110,253,0.15);
+        }
+        .btn-activate {
+            background: linear-gradient(135deg, #0d6efd, #0a58ca);
+            border: none;
+            border-radius: 0.5rem;
+            padding: 0.85rem;
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            transition: all 0.2s;
+        }
+        .btn-activate:hover:not(:disabled) {
+            background: linear-gradient(135deg, #0a58ca, #084298);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(13,110,253,0.4);
+        }
+        .btn-activate:disabled { opacity: 0.7; }
+        .alert-activation {
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            padding: 0.75rem 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+
+        <!-- Loading Overlay -->
+        <div v-if="loading" class="loading-overlay">
+            <div class="text-center text-white">
+                <div class="spinner-border mb-3" role="status"></div>
+                <h4>{{ loadingMessage }}</h4>
+                <p class="mb-0">Procesando...</p>
+            </div>
+        </div>
+
+        <!-- ===== MODAL DE ACTIVACIÓN ===== -->
+        <div v-if="showActivationModal" class="modal-overlay">
+            <div class="modal-box">
+                <div class="activation-card card">
+                    <!-- Header -->
+                    <div class="activation-header">
+                        <i class="bi bi-shield-lock lock-icon"></i>
+                        <h4 class="fw-bold mb-1">Activar Nevera</h4>
+                        <p class="mb-0 opacity-75" style="font-size:0.9rem;">Ingresa la contraseña única de activación</p>
+                    </div>
+
+                    <!-- Body -->
+                    <div class="activation-body">
+                        <!-- Error -->
+                        <div v-if="activationError" class="alert alert-danger alert-activation mb-3">
+                            <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ activationError }}
+                        </div>
+
+                        <!-- Éxito -->
+                        <div v-if="activationSuccess" class="alert alert-success alert-activation mb-3">
+                            <i class="bi bi-check-circle-fill me-2"></i>{{ activationSuccess }}
+                        </div>
+
+                        <!-- Input contraseña -->
+                        <div class="mb-4">
+                            <label class="form-label fw-semibold text-muted small text-uppercase">
+                                Contraseña de Activación
+                            </label>
+                            <div class="input-group">
+                                <input
+                                    :type="showPassword ? 'text' : 'password'"
+                                    class="form-control"
+                                    v-model="activationPassword"
+                                    placeholder="••••••••••••"
+                                    :disabled="activating"
+                                    @keyup.enter="doActivation"
+                                    autofocus
+                                >
+                                <button
+                                    class="btn btn-outline-secondary"
+                                    type="button"
+                                    @click="showPassword = !showPassword"
+                                    :disabled="activating"
+                                    tabindex="-1"
+                                >
+                                    <i :class="showPassword ? 'bi bi-eye-slash' : 'bi bi-eye'"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Botón activar -->
+                        <button
+                            class="btn btn-primary btn-activate w-100 text-white"
+                            @click="doActivation"
+                            :disabled="!activationPassword || activating"
+                        >
+                            <span v-if="activating">
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                                Activando...
+                            </span>
+                            <span v-else>
+                                <i class="bi bi-power me-2"></i>Activar Nevera
+                            </span>
+                        </button>
+
+                        <!-- Cancelar -->
+                        <button
+                            class="btn btn-link w-100 mt-2 text-muted"
+                            @click="closeActivationModal"
+                            :disabled="activating"
+                        >
+                            Cancelar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== MODAL AGREGAR EMPAQUE ===== -->
+        <div v-if="showAddProductModal" class="modal-overlay" @click.self="showAddProductModal = false">
+            <div class="modal-box">
+                <div class="card shadow border-0 rounded-3">
+                    <div class="card-header bg-dark text-white">
+                        <h5 class="mb-0"><i class="bi bi-plus-circle me-2"></i>Agregar Empaque</h5>
+                    </div>
+                    <div class="card-body p-4">
+                        <div class="mb-3">
+                            <label class="form-label">EPC o ID Empaque</label>
+                            <input type="text" class="form-control" v-model="newProduct.input" placeholder="Ej: ABC123DEF456GHI789JKL012 (EPC) o 12345 (ID)">
+                            <div class="form-text">
+                                <small class="text-muted">
+                                    Ingresa un EPC (contiene letras) o ID de empaque (solo números).<br>
+                                    La API completará ambos identificadores cuando valide el empaque.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-footer d-flex justify-content-end gap-2">
+                        <button class="btn btn-secondary" @click="showAddProductModal = false">Cancelar</button>
+                        <button class="btn btn-primary" @click="addEmpaque" :disabled="!newProduct.input">
+                            <i class="bi bi-plus-circle me-1"></i>Agregar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== NAVBAR ===== -->
+        <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+            <div class="container-fluid">
+                <a class="navbar-brand" href="#">
+                    <i class="bi bi-hdd-stack me-2"></i>Simulador Vorak Edge
+                </a>
+                <div class="collapse navbar-collapse">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item">
+                            <a class="nav-link" href="#" @click.prevent="openActivationModal">
+                                <i class="bi bi-plus-circle me-1"></i> Agregar Nevera
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#" @click.prevent="refreshAll">
+                                <i class="bi bi-arrow-clockwise me-1"></i> Actualizar
+                            </a>
+                        </li>
+                    </ul>
+                    <span class="navbar-text me-3">
+                        <i class="bi bi-circle-fill"
+                           :class="apiStatus === 'online' ? 'text-success' : (apiStatus === 'offline' ? 'text-danger' : 'text-warning')">
+                        </i>
+                        API: {{ apiStatus }}
+                    </span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- ===== CONTENIDO PRINCIPAL ===== -->
+        <div class="container-fluid py-4">
+
+            <!-- Alertas globales -->
+            <div class="alert alert-danger alert-dismissible" v-if="error" role="alert">
+                <i class="bi bi-exclamation-triangle me-2"></i>{{ error }}
+                <button type="button" class="btn-close" @click="error = ''"></button>
+            </div>
+
+            <!-- Lista de Neveras -->
+            <div class="row mb-4" v-if="fridges.length > 0">
+                <div class="col-12">
+                    <div class="d-flex gap-2 overflow-auto pb-2">
+                        <div
+                            v-for="fridge in fridges"
+                            :key="fridge.fridge_id"
+                            class="card fridge-card flex-shrink-0"
+                            :class="{ active: selectedFridgeId === fridge.fridge_id }"
+                            style="width: 200px; cursor: pointer;"
+                            @click="selectFridge(fridge.fridge_id)"
+                        >
+                            <div class="card-body p-3">
+                                <h6 class="card-title mb-1 text-truncate">
+                                    <i class="bi bi-hdd me-1"></i>Nevera {{ fridge.real_fridge_id || fridge.fridge_id }}
+                                </h6>
+                                <small class="text-muted d-block mb-2">{{ fridge.store_name || fridge.location }}</small>
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="badge" :class="fridge.is_door_open ? 'bg-warning' : 'bg-success'">
+                                        {{ fridge.is_door_open ? 'ABIERTA' : 'CERRADA' }}
+                                    </span>
+                                    <span class="temperature-cold">{{ fridge.temperature }}°C</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Estado Vacío -->
+            <div class="text-center py-5" v-if="fridges.length === 0 && !loading">
+                <i class="bi bi-hdd-stack display-1 text-muted"></i>
+                <h3 class="mt-3">No hay neveras configuradas</h3>
+                <p class="text-muted">Activa una nevera con su contraseña para comenzar</p>
+                <button class="btn btn-primary btn-lg" @click="openActivationModal">
+                    <i class="bi bi-power me-2"></i>Activar Nevera
+                </button>
+            </div>
+
+            <!-- Dashboard de Nevera Seleccionada -->
+            <div v-if="selectedFridge" class="row">
+                <!-- Panel de Control -->
+                <div class="col-lg-4 mb-4">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="mb-0"><i class="bi bi-gear me-2"></i>Panel de Control</h5>
+                        </div>
+                        <div class="card-body">
+                            <!-- Estado de Puerta -->
+                            <div class="text-center mb-4">
+                                <div class="door-indicator mb-2" :class="selectedFridge.is_door_open ? 'door-open' : 'door-closed'">
+                                    <i :class="selectedFridge.is_door_open ? 'bi bi-door-open' : 'bi bi-door-closed'"></i>
+                                </div>
+                                <h5>Puerta: {{ selectedFridge.is_door_open ? 'ABIERTA' : 'CERRADA' }}</h5>
+                                <button
+                                    class="btn"
+                                    :class="selectedFridge.is_door_open ? 'btn-danger' : 'btn-success'"
+                                    @click="toggleDoor"
+                                    :disabled="processingDoor"
+                                >
+                                    <i :class="selectedFridge.is_door_open ? 'bi bi-door-closed me-1' : 'bi bi-door-open me-1'"></i>
+                                    {{ selectedFridge.is_door_open ? 'Cerrar Puerta' : 'Abrir Puerta' }}
+                                </button>
+                            </div>
+                            <hr>
+                            <!-- Control de Temperatura -->
+                            <div class="mb-4">
+                                <label class="form-label">
+                                    <i class="bi bi-thermometer-half me-1"></i>Temperatura:
+                                    <strong :class="selectedFridge.temperature > 8 ? 'temperature-warm' : 'temperature-cold'">
+                                        {{ selectedFridge.temperature }}°C
+                                    </strong>
+                                </label>
+                                <input type="range" class="form-range" min="-5" max="15" step="0.5"
+                                    v-model.number="temperatureValue" @change="updateTemperature">
+                                <div class="d-flex justify-content-between">
+                                    <small class="text-muted">-5°C</small>
+                                    <small class="text-muted">15°C</small>
+                                </div>
+                            </div>
+                            <hr>
+                            <!-- Info de Conexión -->
+                            <div class="row text-center">
+                                <div class="col-6">
+                                    <small class="text-muted d-block">Token API</small>
+                                    <span class="badge" :class="selectedFridge.has_token ? 'bg-success' : 'bg-secondary'">
+                                        {{ selectedFridge.has_token ? 'Configurado' : 'Sin config' }}
+                                    </span>
+                                </div>
+                                <div class="col-6">
+                                    <small class="text-muted d-block">Última Sincronización</small>
+                                    <small>{{ lastSyncTime || 'Nunca' }}</small>
+                                </div>
+                            </div>
+                            <button class="btn btn-outline-primary w-100 mt-3" @click="manualSync" :disabled="!selectedFridge.has_token">
+                                <i class="bi bi-cloud-upload me-1"></i> Sincronizar Ahora
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventario -->
+                <div class="col-lg-8 mb-4">
+                    <div class="card shadow-sm" :class="{ 'inventory-locked': !selectedFridge.is_door_open }">
+                        <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-box-seam me-2"></i>Inventario</h5>
+                            <span class="badge bg-warning text-dark" v-if="!selectedFridge.is_door_open">
+                                <i class="bi bi-lock me-1"></i>Bloqueado
+                            </span>
+                            <span class="badge bg-success" v-else>
+                                <i class="bi bi-unlock me-1"></i>Desbloqueado
+                            </span>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-hover mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>EPC</th>
+                                            <th>ID Empaque</th>
+                                            <th>Producto</th>
+                                            <th class="text-center">Peso Nominal (g)</th>
+                                            <th class="text-center">Estado</th>
+                                            <th class="text-end">Acciones</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="product in products" :key="`${product.tipo}-${product.id}`" class="product-row">
+                                            <td><code>{{ product.epc || '-' }}</code></td>
+                                            <td><code>{{ product.id_empaque || '-' }}</code></td>
+                                            <td>{{ product.product_name }}</td>
+                                            <td class="text-center">{{ product.peso_nominal_g || '-' }}</td>
+                                            <td class="text-center">
+                                                <span class="badge"
+                                                      :class="product.tipo === 'validado' ? 'bg-success' : 'bg-warning text-dark'">
+                                                    {{ product.tipo === 'validado' ? 'Validado' : 'Pendiente' }}
+                                                </span>
+                                            </td>
+                                            <td class="text-end">
+                                                <button class="btn btn-sm btn-outline-danger"
+                                                    @click="deleteEmpaque(product)"
+                                                    :disabled="!selectedFridge.is_door_open">
+                                                    <i class="bi bi-trash"></i> Remover
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        <tr v-if="products.length === 0">
+                                            <td colspan="6" class="text-center text-muted py-4">
+                                                <i class="bi bi-inbox display-6"></i>
+                                                <p class="mb-0">No hay empaques en el inventario</p>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="card-footer" v-if="selectedFridge.is_door_open">
+                            <button class="btn btn-primary" @click="showAddProductModal = true">
+                                <i class="bi bi-plus-circle me-1"></i>Agregar Empaque
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Historial de Eventos -->
+            <div class="row" v-if="selectedFridge">
+                <div class="col-12">
+                    <div class="card shadow-sm">
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="bi bi-journal-text me-2"></i>Historial de Eventos</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Fecha</th>
+                                            <th>Evento</th>
+                                            <th>Estado</th>
+                                            <th>Código</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="event in events" :key="event.id">
+                                            <td><small>{{ formatDate(event.created_at) }}</small></td>
+                                            <td><code>{{ event.event_type }}</code></td>
+                                            <td>
+                                                <span class="badge" :class="event.success ? 'bg-success' : 'bg-danger'">
+                                                    {{ event.success ? 'Éxito' : 'Error' }}
+                                                </span>
+                                            </td>
+                                            <td>{{ event.response_status || '-' }}</td>
+                                        </tr>
+                                        <tr v-if="events.length === 0">
+                                            <td colspan="4" class="text-center text-muted">No hay eventos registrados</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast -->
+        <div class="toast-container" v-if="showToast">
+            <div class="toast show" :class="toastClass" role="alert">
+                <div class="toast-header">
+                    <strong class="me-auto">{{ toastTitle }}</strong>
+                    <button type="button" class="btn-close" @click="showToast = false"></button>
+                </div>
+                <div class="toast-body">{{ toastMessage }}</div>
+            </div>
+        </div>
+
+    </div><!-- #app -->
+
+    <script src="https://unpkg.com/vue@3.3.8/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+    const { createApp, ref, computed, watch, onMounted } = Vue;
+
+    createApp({
+        setup() {
+            // ---- Estado general ----
+            const loading        = ref(false);
+            const loadingMessage = ref('');
+            const error          = ref('');
+            const fridges        = ref([]);
+            const selectedFridgeId = ref(null);
+            const products       = ref([]);
+            const events         = ref([]);
+            const apiStatus      = ref('unknown');
+
+            // ---- Modal activación ----
+            const showActivationModal = ref(false);
+            const activationPassword  = ref('');
+            const activating          = ref(false);
+            const activationError     = ref('');
+            const activationSuccess   = ref('');
+            const showPassword        = ref(false);
+
+            // ---- Modal producto ----
+            const showAddProductModal = ref(false);
+            const newProduct = ref({ input: '' });
+
+            // ---- Estado puerta / temperatura ----
+            const processingDoor   = ref(false);
+            const temperatureValue = ref(4);
+            const lastSyncTime     = ref(null);
+
+            // ---- Toast ----
+            const showToast    = ref(false);
+            const toastTitle   = ref('');
+            const toastMessage = ref('');
+            const toastClass   = ref('bg-success text-white');
+
+            // ---- Computed ----
+            const selectedFridge = computed(() =>
+                fridges.value.find(f => f.fridge_id === selectedFridgeId.value)
+            );
+
+            watch(selectedFridgeId, (newId) => {
+                if (newId) {
+                    loadProducts(newId);
+                    loadEvents(newId);
+                    const f = selectedFridge.value;
+                    if (f) temperatureValue.value = f.temperature;
+                }
+            });
+
+            // ---- Helpers ----
+            const displayToast = (title, message, cls) => {
+                toastTitle.value   = title;
+                toastMessage.value = message;
+                toastClass.value   = cls || 'bg-success text-white';
+                showToast.value    = true;
+                setTimeout(() => { showToast.value = false; }, 4000);
+            };
+
+            const formatDate = (d) => d ? new Date(d).toLocaleString() : '-';
+
+            // ---- API calls ----
+            const loadFridges = async () => {
+                try {
+                    const r = await fetch('/api/fridges');
+                    const d = await r.json();
+                    if (d.success) {
+                        fridges.value = d.data;
+                        if (fridges.value.length > 0 && !selectedFridgeId.value) {
+                            selectedFridgeId.value = fridges.value[0].fridge_id;
+                        }
+                    }
+                } catch(e) { console.error(e); }
+            };
+
+            const loadProducts = async (fridgeId) => {
+                try {
+                    // Cargar empaques validados
+                    const r1 = await fetch(`/api/fridges/${fridgeId}/empaques`);
+                    const d1 = await r1.json();
+
+                    // Cargar empaques pendientes
+                    const r2 = await fetch(`/api/fridges/${fridgeId}/empaques-pendientes`);
+                    const d2 = await r2.json();
+
+                    if (d1.success && d2.success) {
+                        // Combinar ambos arrays y marcar el tipo
+                        const validados = d1.data.map(e => ({ ...e, tipo: 'validado' }));
+                        const pendientes = d2.data.map(e => ({ ...e, tipo: 'pendiente', product_name: 'Pendiente validación' }));
+                        products.value = [...validados, ...pendientes];
+                    }
+                } catch(e) { console.error(e); }
+            };
+
+            const loadEvents = async (fridgeId) => {
+                try {
+                    const r = await fetch(`/api/events?fridge_id=${fridgeId}&limit=20`);
+                    const d = await r.json();
+                    if (d.success) events.value = d.data;
+                } catch(e) { console.error(e); }
+            };
+
+            const checkApiStatus = async () => {
+                try {
+                    const r = await fetch('/api/health');
+                    const d = await r.json();
+                    apiStatus.value = d.api_real || 'unknown';
+                } catch(e) { apiStatus.value = 'offline'; }
+            };
+
+            const selectFridge = (id) => { selectedFridgeId.value = id; };
+
+            // ---- Modal activación ----
+            const openActivationModal = () => {
+                activationPassword.value = '';
+                activationError.value    = '';
+                activationSuccess.value  = '';
+                showPassword.value       = false;
+                showActivationModal.value = true;
+            };
+
+            const closeActivationModal = () => {
+                if (activating.value) return;
+                showActivationModal.value = false;
+                activationPassword.value  = '';
+                activationError.value     = '';
+                activationSuccess.value   = '';
+                showPassword.value        = false;
+            };
+
+            const doActivation = async () => {
+                if (!activationPassword.value || activating.value) return;
+
+                activating.value        = true;
+                activationError.value   = '';
+                activationSuccess.value = '';
+
+                try {
+                    const r = await fetch('/api/fridges', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: activationPassword.value })
+                    });
+                    const d = await r.json();
+
+                    if (d.success) {
+                        activationSuccess.value = d.message || 'Nevera activada correctamente';
+                        setTimeout(async () => {
+                            showActivationModal.value = false;
+                            activationPassword.value  = '';
+                            activationSuccess.value   = '';
+                            await loadFridges();
+                            selectedFridgeId.value = d.data.fridge_id;
+                            displayToast('Nevera Activada', 'La nevera fue conectada correctamente', 'bg-success text-white');
+                        }, 1500);
+                    } else {
+                        activationError.value = d.error || 'Error al activar la nevera';
+                    }
+                } catch(e) {
+                    activationError.value = 'Error de conexión. Verifica tu internet.';
+                } finally {
+                    activating.value = false;
+                }
+            };
+
+            // ---- Puerta ----
+            const toggleDoor = async () => {
+                if (!selectedFridge.value) return;
+                const newState = !selectedFridge.value.is_door_open;
+                if (!newState) { loading.value = true; loadingMessage.value = 'Leyendo Tags RFID...'; }
+                processingDoor.value = true;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/door`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ is_door_open: newState })
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        const f = fridges.value.find(x => x.fridge_id === selectedFridgeId.value);
+                        if (f) f.is_door_open = d.data.is_door_open;
+                        await loadEvents(selectedFridgeId.value);
+                        if (!newState) {
+                            if (d.api_synced) {
+                                displayToast('Sincronizado', 'Inventario enviado a la API', 'bg-success text-white');
+                                lastSyncTime.value = new Date().toLocaleTimeString();
+                            } else {
+                                displayToast('Advertencia', d.api_error || 'Error al sincronizar', 'bg-warning text-dark');
+                            }
+                        }
+                    } else { error.value = d.error; }
+                } catch(e) { error.value = 'Error de conexión'; }
+                finally { loading.value = false; processingDoor.value = false; }
+            };
+
+            // ---- Temperatura ----
+            const updateTemperature = async () => {
+                if (!selectedFridge.value) return;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/temperature`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ temperature: temperatureValue.value })
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        const f = fridges.value.find(x => x.fridge_id === selectedFridgeId.value);
+                        if (f) f.temperature = d.data.temperature;
+                    }
+                } catch(e) { console.error(e); }
+            };
+
+            // ---- Productos ----
+            const incrementProduct = async (product) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, {
+                        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ quantity: product.quantity + 1 })
+                    });
+                    const d = await r.json();
+                    if (d.success) product.quantity = d.data.quantity;
+                    else error.value = d.error;
+                } catch(e) { error.value = 'Error de conexión'; }
+            };
+
+            const decrementProduct = async (product) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, {
+                        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ quantity: Math.max(0, product.quantity - 1) })
+                    });
+                    const d = await r.json();
+                    if (d.success) product.quantity = d.data.quantity;
+                } catch(e) { error.value = 'Error de conexión'; }
+            };
+
+            const deleteProduct = async (product) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
+                if (!confirm(`¿Eliminar ${product.name}?`)) return;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, { method: 'DELETE' });
+                    const d = await r.json();
+                    if (d.success) await loadProducts(selectedFridgeId.value);
+                    else error.value = d.error;
+                } catch(e) { error.value = 'Error de conexión'; }
+            };
+
+            const addEmpaque = async () => {
+                if (!selectedFridge.value || !newProduct.value.input) return;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/empaques`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ input: newProduct.value.input })
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        showAddProductModal.value = false;
+                        newProduct.value = { input: '' };
+                        await loadProducts(selectedFridgeId.value);
+                        displayToast('Éxito', d.message, 'bg-success text-white');
+                    } else { error.value = d.error; }
+                } catch(e) { error.value = 'Error de conexión'; }
+            };
+
+            const deleteEmpaque = async (empaque) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
+                const identifier = empaque.epc || `ID:${empaque.id_empaque}`;
+                if (!confirm(`¿Remover empaque ${identifier}?`)) return;
+
+                try {
+                    let endpoint;
+                    if (empaque.tipo === 'validado') {
+                        endpoint = `/api/fridges/${selectedFridgeId.value}/empaques/${empaque.id}`;
+                    } else {
+                        endpoint = `/api/fridges/${selectedFridgeId.value}/empaques-pendientes/${empaque.id}`;
+                    }
+
+                    const r = await fetch(endpoint, { method: 'DELETE' });
+                    const d = await r.json();
+                    if (d.success) {
+                        await loadProducts(selectedFridgeId.value);
+                        displayToast('Éxito', d.message, 'bg-success text-white');
+                    } else { error.value = d.error; }
+                } catch(e) { error.value = 'Error de conexión'; }
+            };
+
+            // ---- Sync manual ----
+            const manualSync = async () => {
+                if (!selectedFridge.value) return;
+                loading.value = true; loadingMessage.value = 'Sincronizando con API...';
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/sync`, { method: 'POST' });
+                    const d = await r.json();
+                    if (d.success) {
+                        lastSyncTime.value = new Date().toLocaleTimeString();
+                        await loadEvents(selectedFridgeId.value);
+                        displayToast('Sincronizado', 'Datos enviados a la API', 'bg-success text-white');
+                    } else {
+                        error.value = (d.api_response && d.api_response.error) ? d.api_response.error : 'Error al sincronizar';
+                    }
+                } catch(e) { error.value = 'Error de conexión'; }
+                finally { loading.value = false; }
+            };
+
+            const refreshAll = async () => {
+                try {
+                    // Primero sincronizar con la API central
+                    const syncResponse = await fetch('/api/sync', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const syncData = await syncResponse.json();
+
+                    if (syncData.success) {
+                        displayToast('Sincronización', syncData.message, 'bg-success text-white');
+                    } else {
+                        displayToast('Error de Sincronización', syncData.error, 'bg-warning text-dark');
+                    }
+                } catch (error) {
+                    console.error('Error al sincronizar:', error);
+                    displayToast('Error', 'No se pudo sincronizar con la API', 'bg-danger text-white');
+                }
+
+                // Luego recargar datos locales
+                await loadFridges();
+                if (selectedFridgeId.value) {
+                    await loadProducts(selectedFridgeId.value);
+                    await loadEvents(selectedFridgeId.value);
+                }
+                await checkApiStatus();
+            };
+
+            // ---- Init ----
+            onMounted(async () => {
+                await loadFridges();
+                await checkApiStatus();
+            });
+
+            return {
+                loading, loadingMessage, error, fridges, selectedFridgeId,
+                selectedFridge, products, events, apiStatus,
+                showActivationModal, activationPassword, activating,
+                activationError, activationSuccess, showPassword,
+                showAddProductModal, newProduct,
+                processingDoor, temperatureValue, lastSyncTime,
+                showToast, toastTitle, toastMessage, toastClass,
+                selectFridge, openActivationModal, closeActivationModal, doActivation,
+                toggleDoor, updateTemperature,
+                incrementProduct, decrementProduct, deleteEmpaque, addEmpaque,
+                manualSync, refreshAll, formatDate, displayToast
+            };
+        }
+    }).mount('#app');
+    </script>
+</body>
+</html>

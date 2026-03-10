@@ -1,0 +1,16 @@
+# Flask y extensiones
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-CORS==4.0.0
+
+# Base de datos
+SQLAlchemy==2.0.23
+
+# Solicitudes HTTP
+requests==2.31.0
+
+# Variables de entorno
+python-dotenv==1.0.0
+
+# Serialización JSON
+orjson==3.9.12
