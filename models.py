@@ -23,11 +23,14 @@ class Fridge(db.Model):
     secret_key = db.Column(db.String(128), nullable=False)
     api_token = db.Column(db.String(256), nullable=True)
     location = db.Column(db.String(128), nullable=True, default='Unknown')
-    
+
+    # Productos asociados a esta nevera (de la activación)
+    products_ids = db.Column(db.Text, nullable=True)  # JSON string con lista de product_ids
+
     # Estado simulado de sensores
     temperature = db.Column(db.Float, nullable=False, default=4.0)
     is_door_open = db.Column(db.Boolean, nullable=False, default=False)
-    
+
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -46,6 +49,7 @@ class Fridge(db.Model):
             'temperature': self.temperature,
             'is_door_open': self.is_door_open,
             'has_token': self.api_token is not None,
+            'products_ids': self.products_ids,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }

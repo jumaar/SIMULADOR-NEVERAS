@@ -337,6 +337,9 @@ def sync_from_api() -> tuple:
                 db.session.delete(existing_fridge)
                 logger.info(f"Nevera {existing_fridge.fridge_id} eliminada (no está activa)")
 
+        # Actualizar products_ids de todas las neveras con los productos globales
+        all_product_ids = [str(p['id_producto']) for p in productos_globales]
+        Fridge.query.update({'products_ids': json.dumps(all_product_ids)})
         db.session.commit()
 
         return True, sync_data.get('message', f"Sincronización completada: {len(neveras_data)} neveras, {len(productos_globales)} productos")

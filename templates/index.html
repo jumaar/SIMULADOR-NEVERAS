@@ -359,11 +359,46 @@
                     </div>
                 </div>
 
-                <!-- Inventario -->
+                <!-- Productos Disponibles -->
+                <div class="col-lg-4 mb-4">
+                    <div class="card shadow-sm">
+                        <div class="card-header bg-info text-white">
+                            <h5 class="mb-0"><i class="bi bi-list-check me-2"></i>Productos Disponibles</h5>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                                <table class="table table-hover mb-0">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th>ID Producto</th>
+                                            <th>Nombre</th>
+                                            <th>Peso Nominal (g)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="prod in productosGlobales" :key="prod.product_id" class="product-row">
+                                            <td><code>{{ prod.product_id }}</code></td>
+                                            <td>{{ prod.name }}</td>
+                                            <td class="text-center">{{ prod.nominal_weight_g || '-' }}</td>
+                                        </tr>
+                                        <tr v-if="productosGlobales.length === 0">
+                                            <td colspan="3" class="text-center text-muted py-4">
+                                                <i class="bi bi-inbox display-6"></i>
+                                                <p class="mb-0">No hay productos disponibles</p>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventario (Estantería) -->
                 <div class="col-lg-8 mb-4">
                     <div class="card shadow-sm" :class="{ 'inventory-locked': !selectedFridge.is_door_open }">
                         <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0"><i class="bi bi-box-seam me-2"></i>Inventario</h5>
+                            <h5 class="mb-0"><i class="bi bi-box-seam me-2"></i>Estantería (Inventario)</h5>
                             <span class="badge bg-warning text-dark" v-if="!selectedFridge.is_door_open">
                                 <i class="bi bi-lock me-1"></i>Bloqueado
                             </span>
@@ -385,29 +420,62 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <tr v-for="product in products" :key="`${product.tipo}-${product.id}`" class="product-row">
-                                            <td><code>{{ product.epc || '-' }}</code></td>
-                                            <td><code>{{ product.id_empaque || '-' }}</code></td>
-                                            <td>{{ product.product_name }}</td>
-                                            <td class="text-center">{{ product.peso_nominal_g || '-' }}</td>
+                                        <!-- Productos con empaques agrupados -->
+                                        <template v-for="group in products" :key="group.product.product_id">
+                                            <!-- Fila del producto -->
+                                            <tr class="table-info">
+                                                <td colspan="4">
+                                                    <strong>{{ group.product.name }}</strong> ({{ group.product.product_id }})<br>
+                                                    <small class="text-muted">{{ group.product.description || 'Sin descripción' }} - Peso nominal: {{ group.product.nominal_weight_g || '-' }}g</small>
+                                                </td>
+                                                <td class="text-center">{{ group.empaques.length }} empaques</td>
+                                                <td></td>
+                                            </tr>
+                                            <!-- Filas de empaques -->
+                                            <tr v-for="emp in group.empaques" :key="emp.id" class="product-row">
+                                                <td><code>{{ emp.epc || '-' }}</code></td>
+                                                <td><code>{{ emp.id_empaque || '-' }}</code></td>
+                                                <td>{{ emp.product_name }}</td>
+                                                <td class="text-center">{{ emp.peso_nominal_g || '-' }}</td>
+                                                <td class="text-center">
+                                                    <span class="badge bg-success">Validado</span>
+                                                </td>
+                                                <td class="text-end">
+                                                    <button class="btn btn-sm btn-outline-danger"
+                                                        @click="deleteEmpaque(emp)"
+                                                        :disabled="!selectedFridge.is_door_open">
+                                                        <i class="bi bi-trash"></i> Remover
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                            <tr v-if="group.empaques.length === 0">
+                                                <td colspan="6" class="text-center text-muted">Sin empaques en esta estantería</td>
+                                            </tr>
+                                        </template>
+                                        <!-- Pendientes de validación -->
+                                        <tr class="table-warning" v-if="pendientes.length > 0">
+                                            <td colspan="6"><strong>Pendientes de Validación</strong></td>
+                                        </tr>
+                                        <tr v-for="emp in pendientes" :key="emp.id" class="product-row">
+                                            <td><code>{{ emp.epc || '-' }}</code></td>
+                                            <td><code>{{ emp.id_empaque || '-' }}</code></td>
+                                            <td>{{ emp.product_name }}</td>
+                                            <td class="text-center">-</td>
                                             <td class="text-center">
-                                                <span class="badge"
-                                                      :class="product.tipo === 'validado' ? 'bg-success' : 'bg-warning text-dark'">
-                                                    {{ product.tipo === 'validado' ? 'Validado' : 'Pendiente' }}
-                                                </span>
+                                                <span class="badge bg-warning text-dark">Pendiente</span>
                                             </td>
                                             <td class="text-end">
                                                 <button class="btn btn-sm btn-outline-danger"
-                                                    @click="deleteEmpaque(product)"
+                                                    @click="deleteEmpaque(emp)"
                                                     :disabled="!selectedFridge.is_door_open">
                                                     <i class="bi bi-trash"></i> Remover
                                                 </button>
                                             </td>
                                         </tr>
-                                        <tr v-if="products.length === 0">
+                                        <tr v-if="products.length === 0 && pendientes.length === 0">
                                             <td colspan="6" class="text-center text-muted py-4">
                                                 <i class="bi bi-inbox display-6"></i>
-                                                <p class="mb-0">No hay empaques en el inventario</p>
+                                                <p class="mb-0">No hay productos en la estantería</p>
                                             </td>
                                         </tr>
                                     </tbody>
@@ -491,7 +559,9 @@
             const error          = ref('');
             const fridges        = ref([]);
             const selectedFridgeId = ref(null);
+            const productosGlobales = ref([]);
             const products       = ref([]);
+            const pendientes     = ref([]);
             const events         = ref([]);
             const apiStatus      = ref('unknown');
 
@@ -557,6 +627,14 @@
                 } catch(e) { console.error(e); }
             };
 
+            const loadProductosGlobales = async () => {
+                try {
+                    const r = await fetch('/api/productos-globales');
+                    const d = await r.json();
+                    if (d.success) productosGlobales.value = d.data;
+                } catch(e) { console.error(e); }
+            };
+
             const loadProducts = async (fridgeId) => {
                 try {
                     // Cargar empaques validados
@@ -568,10 +646,23 @@
                     const d2 = await r2.json();
 
                     if (d1.success && d2.success) {
-                        // Combinar ambos arrays y marcar el tipo
-                        const validados = d1.data.map(e => ({ ...e, tipo: 'validado' }));
-                        const pendientes = d2.data.map(e => ({ ...e, tipo: 'pendiente', product_name: 'Pendiente validación' }));
-                        products.value = [...validados, ...pendientes];
+                        // Crear grupos por producto
+                        let grouped = {};
+                        productosGlobales.value.forEach(prod => {
+                            grouped[prod.product_id] = { product: prod, empaques: [] };
+                        });
+
+                        // Agregar empaques validados a sus productos
+                        d1.data.forEach(emp => {
+                            if (grouped[emp.product_id]) {
+                                grouped[emp.product_id].empaques.push({ ...emp, tipo: 'validado' });
+                            }
+                        });
+
+                        products.value = Object.values(grouped);
+
+                        // Pendientes separados
+                        pendientes.value = d2.data.map(e => ({ ...e, tipo: 'pendiente', product_name: 'Pendiente validación' }));
                     }
                 } catch(e) { console.error(e); }
             };
@@ -809,6 +900,7 @@
 
                 // Luego recargar datos locales
                 await loadFridges();
+                await loadProductosGlobales();
                 if (selectedFridgeId.value) {
                     await loadProducts(selectedFridgeId.value);
                     await loadEvents(selectedFridgeId.value);
@@ -819,12 +911,13 @@
             // ---- Init ----
             onMounted(async () => {
                 await loadFridges();
+                await loadProductosGlobales();
                 await checkApiStatus();
             });
 
             return {
                 loading, loadingMessage, error, fridges, selectedFridgeId,
-                selectedFridge, products, events, apiStatus,
+                selectedFridge, productosGlobales, products, pendientes, events, apiStatus,
                 showActivationModal, activationPassword, activating,
                 activationError, activationSuccess, showPassword,
                 showAddProductModal, newProduct,
