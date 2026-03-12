@@ -218,7 +218,7 @@ def validar_empaque_pendiente(fridge_id: str, input_value: str, api_response: di
             # Crear producto global si no existe
             producto_global = ProductoGlobal(
                 product_id=str(product_id),
-                name=pkg.get('nombre_producto', f'Producto {product_id}'),
+                name=api_response.get('nombre_producto', f'Producto {product_id}'),
                 description='Creado desde validación API',
                 nominal_weight_g=peso_nominal_g
             )
