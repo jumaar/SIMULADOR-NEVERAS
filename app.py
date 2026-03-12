@@ -183,19 +183,24 @@ def validar_empaque_pendiente(fridge_id: str, input_value: str, api_response: di
         tuple: (success: bool, message: str)
     """
     try:
-        # Buscar empaque pendiente
-        if input_value.isdigit():
+        # Buscar empaque pendiente de manera inteligente
+        # Primero por EPC si existe
+        pendiente = None
+        if api_response.get('epc'):
             pendiente = EmpaquePendiente.query.filter_by(
                 fridge_id=fridge_id,
-                id_empaque=int(input_value)
+                epc=api_response['epc']
             ).first()
-        else:
+
+        # Si no encontró por EPC, buscar por ID empaque
+        if not pendiente and api_response.get('id_empaque') is not None:
             pendiente = EmpaquePendiente.query.filter_by(
                 fridge_id=fridge_id,
-                epc=input_value
+                id_empaque=api_response['id_empaque']
             ).first()
 
         if not pendiente:
+            logger.warning(f"No se encontró empaque pendiente para {input_value} en fridge {fridge_id}")
             return False, f"No se encontró empaque pendiente para {input_value}"
 
         # Extraer datos de la API
@@ -204,10 +209,21 @@ def validar_empaque_pendiente(fridge_id: str, input_value: str, api_response: di
         epc_completo = api_response.get('epc')  # Puede incluir ambos
         id_empaque_completo = api_response.get('id_empaque')
 
+        input_value = api_response.get('epc') or f"ID:{api_response.get('id_empaque')}"
+        logger.info(f"Validando pendiente {input_value} para fridge {fridge_id} con product_id {product_id}")
+
         # Buscar producto global
         producto_global = ProductoGlobal.query.filter_by(product_id=str(product_id)).first()
         if not producto_global:
-            return False, f"Producto global {product_id} no encontrado. Sincronice primero."
+            # Crear producto global si no existe
+            producto_global = ProductoGlobal(
+                product_id=str(product_id),
+                name=pkg.get('nombre_producto', f'Producto {product_id}'),
+                description='Creado desde validación API',
+                nominal_weight_g=peso_nominal_g
+            )
+            db.session.add(producto_global)
+            logger.info(f"Producto global {product_id} creado desde validación API")
 
         # Crear empaque validado con TODA la información
         empaque_validado = Empaque(
@@ -226,10 +242,12 @@ def validar_empaque_pendiente(fridge_id: str, input_value: str, api_response: di
 
         db.session.commit()
 
+        logger.info(f"Empaque validado exitosamente: {epc_completo or f'ID:{id_empaque_completo}'} - {producto_global.name}")
         return True, f"Empaque validado: {epc_completo or f'ID:{id_empaque_completo}'} - {producto_global.name}"
 
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Error en validar_empaque_pendiente: {str(e)}")
         return False, f"Error al validar empaque: {str(e)}"
 
 
@@ -644,6 +662,42 @@ def update_door(fridge_id):
             response_data['api_synced'] = False
             response_data['api_error'] = api_response.get('error', 'Unknown error')
     
+        # Verificar y validar empaques pendientes si la puerta se cerró
+        if not is_door_open:
+            pendientes_count = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id).count()
+            if pendientes_count > 0:
+                success_val, api_response_val, status_val = send_pending_validation(fridge)
+                if success_val:
+                    # Determinar el formato de la respuesta
+                    if 'empaques' in api_response_val:
+                        packages = api_response_val['empaques']
+                    elif 'empaques_procesados' in api_response_val:
+                        packages = api_response_val['empaques_procesados']
+                    else:
+                        packages = []
+    
+                    validated_count = 0
+                    for pkg in packages:
+                        # Mapear campos de la respuesta al formato esperado por validar_empaque_pendiente
+                        pkg_mapped = {
+                            'product_id': pkg.get('id_producto'),
+                            'peso_nominal_g': pkg.get('peso_exacto_g'),
+                            'epc': pkg.get('epc'),
+                            'id_empaque': pkg.get('id_empaque')
+                        }
+                        input_value = pkg.get('epc') or str(pkg.get('id_empaque'))
+                        success_pkg, message = validar_empaque_pendiente(fridge.fridge_id, input_value, pkg_mapped)
+                        if success_pkg:
+                            validated_count += 1
+                    response_data['validated_pending'] = validated_count
+                    response_data['validation_message'] = f'{validated_count} empaques pendientes validados'
+                else:
+                    response_data['validation_error'] = api_response_val.get('error', 'Error al validar pendientes')
+                    response_data['unprocessed_packages'] = api_response_val.get('empaques_no_procesados', [])
+                    if 'empaques_invalidos' in api_response_val:
+                        # Opcional: log o manejar inválidos
+                        pass
+    
     return jsonify(response_data)
 
 
@@ -774,6 +828,7 @@ def add_empaque(fridge_id):
     )
     db.session.add(pendiente)
     db.session.commit()
+    logger.info(f"Empaque pendiente creado: {epc or f'ID:{id_empaque}'} para fridge {fridge_id}")
 
     # TODO: Aquí implementar llamada a API para validar EPC/ID
     # La API debería validar y responder con producto_id y peso_nominal_g
@@ -866,26 +921,108 @@ def manual_sync(fridge_id):
     Fuerza el envío manual del inventario a la API real.
     """
     fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
-    
+
     if not fridge:
         return jsonify({
             'success': False,
             'error': 'Neveras no encontrada'
         }), 404
-    
+
     if not fridge.api_token:
         return jsonify({
             'success': False,
             'error': 'La neveras no tiene token de API configurado'
         }), 400
-    
+
     success, api_response, status = send_inventory_snapshot(fridge)
-    
+
     return jsonify({
         'success': success,
         'api_response': api_response,
         'status_code': status
     })
+
+
+@app.route('/api/fridges/<fridge_id>/validar-pendientes', methods=['POST'])
+def validar_pendientes_manual(fridge_id):
+    """
+    Valida manualmente los empaques pendientes con la API real.
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    if not fridge.api_token:
+        return jsonify({
+            'success': False,
+            'error': 'La nevera no tiene token de API configurado'
+        }), 400
+
+    success, api_response, status = send_pending_validation(fridge)
+
+    if not success:
+        return jsonify({
+            'success': False,
+            'error': api_response.get('error', 'Error al validar pendientes'),
+            'status_code': status
+        }), 400
+
+    # Procesar respuesta y validar empaques
+    if 'empaques' in api_response:
+        packages = api_response['empaques']
+    elif 'empaques_procesados' in api_response:
+        packages = api_response['empaques_procesados']
+    else:
+        packages = []
+
+    validated_count = 0
+    errors = []
+
+    for pkg in packages:
+        logger.info(f"Procesando paquete de API: {pkg}")
+        # Mapear campos
+        pkg_mapped = {
+            'product_id': pkg.get('id_producto'),
+            'peso_nominal_g': pkg.get('peso_exacto_g'),
+            'epc': pkg.get('epc'),
+            'id_empaque': pkg.get('id_empaque')
+        }
+        input_value = pkg.get('epc') or f"ID:{pkg.get('id_empaque')}"
+        success_pkg, message = validar_empaque_pendiente(fridge.fridge_id, input_value, pkg_mapped)
+        logger.info(f"Resultado validación para {input_value}: {success_pkg} - {message}")
+        if success_pkg:
+            validated_count += 1
+        else:
+            errors.append(message)
+
+    # Si no fue exitoso, eliminar los pendientes no procesados
+    if not success and api_response.get('empaques_no_procesados'):
+        for pkg in api_response['empaques_no_procesados']:
+            pendiente = None
+            if pkg.get('epc'):
+                pendiente = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id, epc=pkg['epc']).first()
+            if not pendiente and pkg.get('id_empaque'):
+                pendiente = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id, id_empaque=pkg['id_empaque']).first()
+            if pendiente:
+                db.session.delete(pendiente)
+                logger.info(f"Eliminado empaque pendiente inválido: {pkg.get('epc') or f'ID:{pkg.get('id_empaque')}'}")
+        db.session.commit()
+
+    status_code = 200 if success else 400
+
+    response_data = {
+        'success': success,
+        'message': api_response.get('message', f'Validación completada: {validated_count} empaques procesados'),
+        'validated_count': validated_count,
+        'errors': errors if errors else None,
+        'unprocessed_packages': api_response.get('empaques_no_procesados', [])
+    }
+
+    return jsonify(response_data), status_code
 
 
 @app.route('/api/events', methods=['GET'])
@@ -963,20 +1100,62 @@ def send_inventory_snapshot(fridge: Fridge) -> tuple:
 
     inventory = [e.to_inventory_dict() for e in empaques]
 
-    # Construir payload
+    # Construir payload con solo IDs de empaques validados
+    empaque_ids = [e.id_empaque or e.epc for e in empaques]
     payload = {
-        'fridge_id': fridge.fridge_id,
+        'fridge_id': int(fridge.real_fridge_id or fridge.fridge_id),
         'timestamp': int(time.time()),
-        'event': 'door_closed_inventory_snapshot',
-        'inventory': inventory
+        'empaque_ids': empaque_ids
     }
 
-    logger.info(f"Enviando snapshot de inventario para {fridge.fridge_id}: {len(inventory)} empaques")
+    logger.info(f"Enviando IDs de empaques para inventario {fridge.fridge_id}: {len(empaque_ids)} empaques")
 
     # Enviar a la API real
     return send_to_api(
         fridge,
-        f'/api/transactions/{fridge.fridge_id}',
+        f'/api/nevera/inventario/{int(fridge.real_fridge_id or fridge.fridge_id)}',
+        method='POST',
+        data=payload
+    )
+
+
+def send_pending_validation(fridge: Fridge) -> tuple:
+    """
+    Envía la lista de empaques pendientes para validación a la API real.
+
+    Args:
+        fridge: Instancia del modelo Fridge
+
+    Returns:
+        tuple: (success: bool, response: dict, status_code: int)
+    """
+    # Recopilar empaques pendientes
+    pendientes = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id).all()
+
+    if not pendientes:
+        logger.info(f"No hay empaques pendientes para validar en {fridge.fridge_id}")
+        return True, {'message': 'No hay pendientes'}, 200
+
+    pending_packages = []
+    for p in pendientes:
+        pending_packages.append({
+            'epc': p.epc,
+            'id_empaque': p.id_empaque
+        })
+
+    # Construir payload
+    payload = {
+        'fridge_id': int(fridge.real_fridge_id or fridge.fridge_id),
+        'timestamp': int(time.time()),
+        'pending_packages': pending_packages
+    }
+
+    logger.info(f"Enviando validación de {len(pending_packages)} empaques pendientes para {fridge.fridge_id}")
+
+    # Enviar a la API real
+    return send_to_api(
+        fridge,
+        '/api/neveras/validacionDosaTres',
         method='POST',
         data=payload
     )

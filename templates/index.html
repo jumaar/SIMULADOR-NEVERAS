@@ -355,6 +355,9 @@
                             <button class="btn btn-outline-primary w-100 mt-3" @click="manualSync" :disabled="!selectedFridge.has_token">
                                 <i class="bi bi-cloud-upload me-1"></i> Sincronizar Ahora
                             </button>
+                            <button class="btn btn-outline-success w-100 mt-2" @click="validatePendingPackages" :disabled="!selectedFridge.has_token || pendientes.length === 0" v-if="pendientes.length > 0">
+                                <i class="bi bi-check-circle me-1"></i> Validar Pendientes ({{ pendientes.length }})
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -593,14 +596,6 @@
                 fridges.value.find(f => f.fridge_id === selectedFridgeId.value)
             );
 
-            watch(selectedFridgeId, (newId) => {
-                if (newId) {
-                    loadProducts(newId);
-                    loadEvents(newId);
-                    const f = selectedFridge.value;
-                    if (f) temperatureValue.value = f.temperature;
-                }
-            });
 
             // ---- Helpers ----
             const displayToast = (title, message, cls) => {
@@ -608,7 +603,10 @@
                 toastMessage.value = message;
                 toastClass.value   = cls || 'bg-success text-white';
                 showToast.value    = true;
-                setTimeout(() => { showToast.value = false; }, 4000);
+                // Auto-cerrar solo para toasts de éxito
+                if (cls && cls.includes('success')) {
+                    setTimeout(() => { showToast.value = false; }, 4000);
+                }
             };
 
             const formatDate = (d) => d ? new Date(d).toLocaleString() : '-';
@@ -622,6 +620,10 @@
                         fridges.value = d.data;
                         if (fridges.value.length > 0 && !selectedFridgeId.value) {
                             selectedFridgeId.value = fridges.value[0].fridge_id;
+                            const f = fridges.value.find(f => f.fridge_id === selectedFridgeId.value);
+                            if (f) temperatureValue.value = f.temperature;
+                            loadProducts(selectedFridgeId.value);
+                            loadEvents(selectedFridgeId.value);
                         }
                     }
                 } catch(e) { console.error(e); }
@@ -645,7 +647,7 @@
                     const r2 = await fetch(`/api/fridges/${fridgeId}/empaques-pendientes`);
                     const d2 = await r2.json();
 
-                    if (d1.success && d2.success) {
+                    if (d1.success && d1.data && Array.isArray(d1.data) && d2.success && d2.data && Array.isArray(d2.data)) {
                         // Crear grupos por producto
                         let grouped = {};
                         productosGlobales.value.forEach(prod => {
@@ -683,7 +685,13 @@
                 } catch(e) { apiStatus.value = 'offline'; }
             };
 
-            const selectFridge = (id) => { selectedFridgeId.value = id; };
+            const selectFridge = (id) => {
+                selectedFridgeId.value = id;
+                const f = selectedFridge.value;
+                if (f) temperatureValue.value = f.temperature;
+                loadProducts(id);
+                loadEvents(id);
+            };
 
             // ---- Modal activación ----
             const openActivationModal = () => {
@@ -740,21 +748,30 @@
 
             // ---- Puerta ----
             const toggleDoor = async () => {
-                if (!selectedFridge.value) return;
+                console.log('DEBUG: toggleDoor called');
+                if (!selectedFridge.value) {
+                    console.log('DEBUG: No selectedFridge');
+                    return;
+                }
                 const newState = !selectedFridge.value.is_door_open;
+                console.log('DEBUG: newState =', newState);
                 if (!newState) { loading.value = true; loadingMessage.value = 'Leyendo Tags RFID...'; }
                 processingDoor.value = true;
                 try {
+                    console.log('DEBUG: Sending PUT request to /api/fridges/' + selectedFridgeId.value + '/door with is_door_open=' + newState);
                     const r = await fetch(`/api/fridges/${selectedFridgeId.value}/door`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ is_door_open: newState })
                     });
+                    console.log('DEBUG: Fetch response status:', r.status);
                     const d = await r.json();
+                    console.log('DEBUG: Response data:', d);
                     if (d.success) {
                         const f = fridges.value.find(x => x.fridge_id === selectedFridgeId.value);
                         if (f) f.is_door_open = d.data.is_door_open;
                         await loadEvents(selectedFridgeId.value);
+                        await loadProducts(selectedFridgeId.value);  // Recargar productos después de cerrar puerta
                         if (!newState) {
                             if (d.api_synced) {
                                 displayToast('Sincronizado', 'Inventario enviado a la API', 'bg-success text-white');
@@ -762,9 +779,24 @@
                             } else {
                                 displayToast('Advertencia', d.api_error || 'Error al sincronizar', 'bg-warning text-dark');
                             }
+                            if (d.validation_message) {
+                                displayToast('Validación Completada', d.validation_message, 'bg-success text-white');
+                            }
+                            if (d.validation_error) {
+                                displayToast('Error de Validación', d.validation_error, 'bg-warning text-dark');
+                            }
+                            if (d.unprocessed_packages && d.unprocessed_packages.length > 0) {
+                                d.unprocessed_packages.forEach(pkg => {
+                                    const identifier = pkg.epc || `ID:${pkg.id_empaque}`;
+                                    displayToast('Error de Validación', `Empaque ${identifier} no procesado: ${pkg.error}. Ubicado en nevera ${pkg.id_nevera}`, 'bg-danger text-white');
+                                });
+                            }
                         }
                     } else { error.value = d.error; }
-                } catch(e) { error.value = 'Error de conexión'; }
+                } catch(e) {
+                    console.log('DEBUG: Fetch error:', e);
+                    error.value = 'Error de conexión';
+                }
                 finally { loading.value = false; processingDoor.value = false; }
             };
 
@@ -879,6 +911,37 @@
                 finally { loading.value = false; }
             };
 
+            const validatePendingPackages = async () => {
+                if (!selectedFridge.value) return;
+                loading.value = true; loadingMessage.value = 'Validando empaques pendientes...';
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/validar-pendientes`, { method: 'POST' });
+                    const d = await r.json();
+                    if (d.success) {
+                        await loadProducts(selectedFridgeId.value);
+                        await loadEvents(selectedFridgeId.value);
+                        displayToast('Validación Exitosa', d.message, 'bg-success text-white');
+                        if (d.unprocessed_packages && d.unprocessed_packages.length > 0) {
+                            d.unprocessed_packages.forEach(pkg => {
+                                const identifier = pkg.epc || `ID:${pkg.id_empaque}`;
+                                displayToast('Error de Validación', `Empaque ${identifier} no procesado: ${pkg.error}. Ubicado en nevera ${pkg.id_nevera}`, 'bg-danger text-white');
+                            });
+                        }
+                    } else {
+                        await loadProducts(selectedFridgeId.value);  // Recargar para reflejar eliminaciones
+                        await loadEvents(selectedFridgeId.value);
+                        displayToast('Validación Fallida', d.message, 'bg-danger text-white');
+                        if (d.unprocessed_packages && d.unprocessed_packages.length > 0) {
+                            d.unprocessed_packages.forEach(pkg => {
+                                const identifier = pkg.epc || `ID:${pkg.id_empaque}`;
+                                displayToast('Empaque Eliminado de Pendientes', `Empaque ${identifier} no procesado: ${pkg.error}. Ubicado en nevera ${pkg.id_nevera}. Ha sido eliminado de pendientes de validación.`, 'bg-warning text-dark');
+                            });
+                        }
+                    }
+                } catch(e) { error.value = 'Error de conexión'; }
+                finally { loading.value = false; }
+            };
+
             const refreshAll = async () => {
                 try {
                     // Primero sincronizar con la API central
@@ -910,8 +973,8 @@
 
             // ---- Init ----
             onMounted(async () => {
-                await loadFridges();
                 await loadProductosGlobales();
+                await loadFridges();
                 await checkApiStatus();
             });
 
@@ -926,7 +989,7 @@
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
                 incrementProduct, decrementProduct, deleteEmpaque, addEmpaque,
-                manualSync, refreshAll, formatDate, displayToast
+                manualSync, validatePendingPackages, refreshAll, formatDate, displayToast
             };
         }
     }).mount('#app');
