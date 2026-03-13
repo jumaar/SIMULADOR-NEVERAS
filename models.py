@@ -236,3 +236,58 @@ class EventLog(db.Model):
 
     def __repr__(self):
         return f'<EventLog {self.event_type} - {"OK" if self.success else "FAIL"}>'
+
+
+class VentaPendiente(db.Model):
+    """
+    Representa una venta pendiente de liquidación.
+    Productos que han sido vendidos pero aún no liquidados con la API.
+    """
+    __tablename__ = 'ventas_pendientes'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    fridge_id = db.Column(db.String(64), db.ForeignKey('fridges.fridge_id'), nullable=False, index=True)
+    producto_global_id = db.Column(db.Integer, db.ForeignKey('productos_globales.id'), nullable=True, index=True)
+
+    # Identificación del empaque vendido
+    epc = db.Column(db.String(24), nullable=True)
+    id_empaque = db.Column(db.Integer, nullable=True)
+
+    # Datos del producto vendido
+    peso_nominal_g = db.Column(db.Float, nullable=True)
+
+    # Estado de liquidación
+    estado = db.Column(db.String(20), nullable=False, default='pendiente')  # pendiente, liquidado, error
+
+    # Timestamps
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relaciones
+    fridge = db.relationship('Fridge', backref='ventas_pendientes')
+    producto_global = db.relationship('ProductoGlobal', backref='ventas_pendientes')
+
+    def to_dict(self):
+        """Convierte el modelo a diccionario para JSON"""
+        return {
+            'id': self.id,
+            'fridge_id': self.fridge_id,
+            'producto_global_id': self.producto_global_id,
+            'product_id': self.producto_global.product_id if self.producto_global else None,
+            'product_name': self.producto_global.name if self.producto_global else None,
+            'epc': self.epc,
+            'id_empaque': self.id_empaque,
+            'peso_nominal_g': self.peso_nominal_g,
+            'estado': self.estado,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
+    def __repr__(self):
+        identifiers = []
+        if self.epc:
+            identifiers.append(f"EPC:{self.epc}")
+        if self.id_empaque:
+            identifiers.append(f"ID:{self.id_empaque}")
+        identifier = " | ".join(identifiers) if identifiers else "Sin ID"
+        return f'<VentaPendiente {identifier} ({self.estado})>'

@@ -362,6 +362,65 @@
                     </div>
                 </div>
 
+                <!-- Ventas Pendientes de Liquidar -->
+                <div class="col-lg-8 mb-4">
+                    <div class="card shadow-sm" :class="{ 'inventory-locked': !selectedFridge.is_door_open }">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Ventas Pendientes de Liquidar</h5>
+                            <span class="badge bg-warning text-dark" v-if="!selectedFridge.is_door_open">
+                                <i class="bi bi-lock me-1"></i>Bloqueado
+                            </span>
+                            <span class="badge bg-success" v-else>
+                                <i class="bi bi-unlock me-1"></i>Desbloqueado
+                            </span>
+                        </div>
+                        <div class="card-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-hover mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>EPC</th>
+                                            <th>ID Empaque</th>
+                                            <th>Producto</th>
+                                            <th class="text-center">Peso Nominal (g)</th>
+                                            <th class="text-center">Estado</th>
+                                            <th class="text-center">Fecha Venta</th>
+                                            <th class="text-end">Acciones</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="venta in ventasPendientes" :key="venta.id" class="product-row">
+                                            <td><code>{{ venta.epc || '-' }}</code></td>
+                                            <td><code>{{ venta.id_empaque || '-' }}</code></td>
+                                            <td>{{ venta.product_name }}</td>
+                                            <td class="text-center">{{ venta.peso_nominal_g || '-' }}</td>
+                                            <td class="text-center">
+                                                <span class="badge bg-warning text-dark">{{ venta.estado }}</span>
+                                            </td>
+                                            <td class="text-center">{{ formatDate(venta.created_at) }}</td>
+                                            <td class="text-end">
+                                                <button class="btn btn-sm btn-outline-primary"
+                                                    @click="devolverVentaPendiente(venta)"
+                                                    :disabled="!selectedFridge.is_door_open || processingAction"
+                                                    :class="{ 'disabled': processingAction }">
+                                                    <span v-if="processingAction && venta.id === processingEmpaqueId" class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                                    <i class="bi bi-arrow-left"></i> Devolver a la Nevera
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        <tr v-if="ventasPendientes.length === 0">
+                                            <td colspan="7" class="text-center text-muted py-4">
+                                                <i class="bi bi-cart-x display-6"></i>
+                                                <p class="mb-0">No hay ventas pendientes de liquidar</p>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Productos Disponibles -->
                 <div class="col-lg-4 mb-4">
                     <div class="card shadow-sm">
@@ -444,9 +503,18 @@
                                                     <span class="badge bg-success">Validado</span>
                                                 </td>
                                                 <td class="text-end">
+                                                    <button class="btn btn-sm btn-outline-success me-1"
+                                                        @click="venderEmpaque(emp)"
+                                                        :disabled="!selectedFridge.is_door_open || processingAction"
+                                                        :class="{ 'disabled': processingAction }">
+                                                        <span v-if="processingAction && emp.id === processingEmpaqueId" class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                                        <i class="bi bi-cart"></i> Vender
+                                                    </button>
                                                     <button class="btn btn-sm btn-outline-danger"
                                                         @click="deleteEmpaque(emp)"
-                                                        :disabled="!selectedFridge.is_door_open">
+                                                        :disabled="!selectedFridge.is_door_open || processingAction"
+                                                        :class="{ 'disabled': processingAction }">
+                                                        <span v-if="processingAction && emp.id === processingEmpaqueId" class="spinner-border spinner-border-sm me-1" role="status"></span>
                                                         <i class="bi bi-trash"></i> Remover
                                                     </button>
                                                 </td>
@@ -565,6 +633,7 @@
             const productosGlobales = ref([]);
             const products       = ref([]);
             const pendientes     = ref([]);
+            const ventasPendientes = ref([]);
             const events         = ref([]);
             const apiStatus      = ref('unknown');
 
@@ -584,6 +653,8 @@
             const processingDoor   = ref(false);
             const temperatureValue = ref(4);
             const lastSyncTime     = ref(null);
+            const processingAction = ref(false);
+            const processingEmpaqueId = ref(null);
 
             // ---- Toast ----
             const showToast    = ref(false);
@@ -647,7 +718,11 @@
                     const r2 = await fetch(`/api/fridges/${fridgeId}/empaques-pendientes`);
                     const d2 = await r2.json();
 
-                    if (d1.success && d1.data && Array.isArray(d1.data) && d2.success && d2.data && Array.isArray(d2.data)) {
+                    // Cargar ventas pendientes
+                    const r3 = await fetch(`/api/fridges/${fridgeId}/ventas-pendientes`);
+                    const d3 = await r3.json();
+
+                    if (d1.success && d1.data && Array.isArray(d1.data) && d2.success && d2.data && Array.isArray(d2.data) && d3.success && d3.data && Array.isArray(d3.data)) {
                         // Crear grupos por producto
                         let grouped = {};
                         productosGlobales.value.forEach(prod => {
@@ -665,6 +740,9 @@
 
                         // Pendientes separados
                         pendientes.value = d2.data.map(e => ({ ...e, tipo: 'pendiente', product_name: 'Pendiente validación' }));
+
+                        // Ventas pendientes
+                        ventasPendientes.value = d3.data;
                     }
                 } catch(e) { console.error(e); }
             };
@@ -872,9 +950,12 @@
             };
 
             const deleteEmpaque = async (empaque) => {
-                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open || processingAction.value) return;
                 const identifier = empaque.epc || `ID:${empaque.id_empaque}`;
                 if (!confirm(`¿Remover empaque ${identifier}?`)) return;
+
+                processingAction.value = true;
+                processingEmpaqueId.value = empaque.id;
 
                 try {
                     let endpoint;
@@ -891,6 +972,58 @@
                         displayToast('Éxito', d.message, 'bg-success text-white');
                     } else { error.value = d.error; }
                 } catch(e) { error.value = 'Error de conexión'; }
+                finally {
+                    processingAction.value = false;
+                    processingEmpaqueId.value = null;
+                }
+            };
+
+            const venderEmpaque = async (empaque) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open || processingAction.value) return;
+                const identifier = empaque.epc || `ID:${empaque.id_empaque}`;
+                if (!confirm(`¿Vender empaque ${identifier}?`)) return;
+
+                processingAction.value = true;
+                processingEmpaqueId.value = empaque.id;
+
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/empaques/${empaque.id}/vender`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        await loadProducts(selectedFridgeId.value);
+                        displayToast('Producto Vendido', d.message, 'bg-success text-white');
+                    } else { error.value = d.error; }
+                } catch(e) { error.value = 'Error de conexión'; }
+                finally {
+                    processingAction.value = false;
+                    processingEmpaqueId.value = null;
+                }
+            };
+
+            const devolverVentaPendiente = async (venta) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open || processingAction.value) return;
+                const identifier = venta.epc || `ID:${venta.id_empaque}`;
+                if (!confirm(`¿Devolver venta pendiente ${identifier} a la nevera?`)) return;
+
+                processingAction.value = true;
+                processingEmpaqueId.value = venta.id;
+
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/ventas-pendientes/${venta.id}/devolver`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        await loadProducts(selectedFridgeId.value);
+                        displayToast('Producto Devuelto', d.message, 'bg-success text-white');
+                    } else { error.value = d.error; }
+                } catch(e) { error.value = 'Error de conexión'; }
+                finally {
+                    processingAction.value = false;
+                    processingEmpaqueId.value = null;
+                }
             };
 
             // ---- Sync manual ----
@@ -980,15 +1113,15 @@
 
             return {
                 loading, loadingMessage, error, fridges, selectedFridgeId,
-                selectedFridge, productosGlobales, products, pendientes, events, apiStatus,
+                selectedFridge, productosGlobales, products, pendientes, ventasPendientes, events, apiStatus,
                 showActivationModal, activationPassword, activating,
                 activationError, activationSuccess, showPassword,
                 showAddProductModal, newProduct,
-                processingDoor, temperatureValue, lastSyncTime,
+                processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId,
                 showToast, toastTitle, toastMessage, toastClass,
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
-                incrementProduct, decrementProduct, deleteEmpaque, addEmpaque,
+                incrementProduct, decrementProduct, deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque,
                 manualSync, validatePendingPackages, refreshAll, formatDate, displayToast
             };
         }

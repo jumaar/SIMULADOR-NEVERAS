@@ -20,7 +20,7 @@ from flask import Flask, render_template, request, jsonify, current_app
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from models import db, Fridge, ProductoGlobal, Empaque, EmpaquePendiente, EventLog
+from models import db, Fridge, ProductoGlobal, Empaque, EmpaquePendiente, EventLog, VentaPendiente
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -756,6 +756,27 @@ def get_empaques_pendientes(fridge_id):
     })
 
 
+@app.route('/api/fridges/<fridge_id>/ventas-pendientes', methods=['GET'])
+def get_ventas_pendientes(fridge_id):
+    """
+    Obtiene las ventas pendientes de liquidación de una nevera.
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    ventas_pendientes = VentaPendiente.query.filter_by(fridge_id=fridge_id).all()
+
+    return jsonify({
+        'success': True,
+        'data': [v.to_dict() for v in ventas_pendientes]
+    })
+
+
 @app.route('/api/fridges/<fridge_id>/empaques', methods=['POST'])
 def add_empaque(fridge_id):
     """
@@ -913,6 +934,145 @@ def delete_empaque_pendiente(fridge_id, pendiente_id):
         'success': True,
         'message': f'Empaque pendiente eliminado: {pendiente.epc or f"ID:{pendiente.id_empaque}"}'
     })
+
+
+@app.route('/api/fridges/<fridge_id>/empaques/<empaque_id>/vender', methods=['POST'])
+def vender_empaque(fridge_id, empaque_id):
+    """
+    Vende un empaque: lo mueve de la estantería a ventas pendientes de liquidar.
+    Solo funciona si la puerta está ABIERTA.
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    if not fridge.is_door_open:
+        return jsonify({
+            'success': False,
+            'error': 'La puerta debe estar ABIERTA para vender productos'
+        }), 403
+
+    empaque = Empaque.query.filter_by(id=empaque_id, fridge_id=fridge_id).first()
+
+    if not empaque:
+        return jsonify({
+            'success': False,
+            'error': 'Empaque no encontrado'
+        }), 404
+
+    # Obtener el nombre del producto antes de la transacción
+    producto_name = "Producto desconocido"
+    if empaque.producto_global:
+        producto_name = empaque.producto_global.name
+    elif empaque.producto_global_id:
+        # Si no está cargado, buscar el producto
+        producto_global = ProductoGlobal.query.get(empaque.producto_global_id)
+        if producto_global:
+            producto_name = producto_global.name
+
+    try:
+        # Crear venta pendiente con los datos del empaque
+        venta_pendiente = VentaPendiente(
+            fridge_id=fridge_id,
+            producto_global_id=empaque.producto_global_id,
+            epc=empaque.epc,
+            id_empaque=empaque.id_empaque,
+            peso_nominal_g=empaque.peso_nominal_g,
+            estado='pendiente'
+        )
+
+        db.session.add(venta_pendiente)
+
+        # Eliminar el empaque de la estantería
+        db.session.delete(empaque)
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'Producto vendido: {empaque.epc or f"ID:{empaque.id_empaque}"} - {producto_name}'
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error al vender empaque: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al vender producto: {str(e)}'
+        }), 500
+
+
+@app.route('/api/fridges/<fridge_id>/ventas-pendientes/<venta_id>/devolver', methods=['POST'])
+def devolver_venta_pendiente(fridge_id, venta_id):
+    """
+    Devuelve una venta pendiente a la estantería.
+    Solo funciona si la puerta está ABIERTA.
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    if not fridge.is_door_open:
+        return jsonify({
+            'success': False,
+            'error': 'La puerta debe estar ABIERTA para devolver productos'
+        }), 403
+
+    venta_pendiente = VentaPendiente.query.filter_by(id=venta_id, fridge_id=fridge_id).first()
+
+    if not venta_pendiente:
+        return jsonify({
+            'success': False,
+            'error': 'Venta pendiente no encontrada'
+        }), 404
+
+    # Obtener el nombre del producto antes de la transacción
+    producto_name = "Producto desconocido"
+    if venta_pendiente.producto_global:
+        producto_name = venta_pendiente.producto_global.name
+    elif venta_pendiente.producto_global_id:
+        # Si no está cargado, buscar el producto
+        producto_global = ProductoGlobal.query.get(venta_pendiente.producto_global_id)
+        if producto_global:
+            producto_name = producto_global.name
+
+    try:
+        # Crear empaque de vuelta en la estantería
+        empaque = Empaque(
+            fridge_id=fridge_id,
+            producto_global_id=venta_pendiente.producto_global_id,
+            epc=venta_pendiente.epc,
+            id_empaque=venta_pendiente.id_empaque,
+            peso_nominal_g=venta_pendiente.peso_nominal_g
+        )
+
+        db.session.add(empaque)
+
+        # Eliminar la venta pendiente
+        db.session.delete(venta_pendiente)
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'Producto devuelto a estantería: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error al devolver venta pendiente: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al devolver producto: {str(e)}'
+        }), 500
 
 
 @app.route('/api/fridges/<fridge_id>/sync', methods=['POST'])
