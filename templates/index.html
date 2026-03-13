@@ -678,7 +678,6 @@
             // ---- Estado puerta / temperatura ----
             const processingDoor   = ref(false);
             const temperatureValue = ref(4);
-            const lastSyncTime     = ref(null);
             const processingAction = ref(false);
             const processingEmpaqueId = ref(null);
             const savingWeightAdjustment = ref(false);
@@ -720,6 +719,21 @@
             const adjustedTotalWeight = computed(() =>
                 totalInventoryWeight.value + currentWeightAdjustment.value
             );
+
+            // Última sincronización de la nevera seleccionada
+            const lastSyncTime = computed(() => {
+                if (!selectedFridge.value || !selectedFridge.value.last_sync) return 'Nunca';
+                // Ajustar UTC a hora de Bogotá (UTC-5)
+                const utcDate = new Date(selectedFridge.value.last_sync);
+                const bogotaTime = new Date(utcDate.getTime() - (5 * 60 * 60 * 1000));
+                return bogotaTime.toLocaleString('es-CO', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            });
 
 
             // ---- Helpers ----
@@ -1114,11 +1128,12 @@
                     const r = await fetch(`/api/fridges/${selectedFridgeId.value}/sync`, { method: 'POST' });
                     const d = await r.json();
                     if (d.success) {
-                        lastSyncTime.value = new Date().toLocaleTimeString();
+                        await loadFridges();  // Recargar fridges para actualizar last_sync
                         await loadEvents(selectedFridgeId.value);
-                        displayToast('Sincronizado', 'Datos enviados a la API', 'bg-success text-white');
+                        await loadProducts(selectedFridgeId.value);  // Recargar productos después de sincronizar
+                        displayToast('Sincronizado', d.message || 'Inventario sincronizado', 'bg-success text-white');
                     } else {
-                        error.value = (d.api_response && d.api_response.error) ? d.api_response.error : 'Error al sincronizar';
+                        error.value = d.error || 'Error al sincronizar';
                     }
                 } catch(e) { error.value = 'Error de conexión'; }
                 finally { loading.value = false; }

@@ -692,55 +692,43 @@ def update_door(fridge_id):
         'data': fridge.to_dict(),
         'message': 'Puerta abierta' if is_door_open else 'Puerta cerrada'
     }
-    
-    # Si se cierra la puerta, disparar evento de inventario
+
+    # Si se cierra la puerta, validar empaques pendientes si hay
     if not is_door_open:
-        # Enviar evento a la API real
-        success, api_response, status = send_inventory_snapshot(fridge)
-        
-        if success:
-            response_data['api_synced'] = True
-            response_data['api_message'] = 'Inventario enviado a la API'
-        else:
-            response_data['api_synced'] = False
-            response_data['api_error'] = api_response.get('error', 'Unknown error')
-    
-        # Verificar y validar empaques pendientes si la puerta se cerró
-        if not is_door_open:
-            pendientes_count = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id).count()
-            if pendientes_count > 0:
-                success_val, api_response_val, status_val = send_pending_validation(fridge)
-                if success_val:
-                    # Determinar el formato de la respuesta
-                    if 'empaques' in api_response_val:
-                        packages = api_response_val['empaques']
-                    elif 'empaques_procesados' in api_response_val:
-                        packages = api_response_val['empaques_procesados']
-                    else:
-                        packages = []
-    
-                    validated_count = 0
-                    for pkg in packages:
-                        # Mapear campos de la respuesta al formato esperado por validar_empaque_pendiente
-                        pkg_mapped = {
-                            'product_id': pkg.get('id_producto'),
-                            'peso_nominal_g': pkg.get('peso_exacto_g'),
-                            'epc': pkg.get('epc'),
-                            'id_empaque': pkg.get('id_empaque')
-                        }
-                        input_value = pkg.get('epc') or str(pkg.get('id_empaque'))
-                        success_pkg, message = validar_empaque_pendiente(fridge.fridge_id, input_value, pkg_mapped)
-                        if success_pkg:
-                            validated_count += 1
-                    response_data['validated_pending'] = validated_count
-                    response_data['validation_message'] = f'{validated_count} empaques pendientes validados'
+        pendientes_count = EmpaquePendiente.query.filter_by(fridge_id=fridge.fridge_id).count()
+        if pendientes_count > 0:
+            success_val, api_response_val, status_val = send_pending_validation(fridge)
+            if success_val:
+                # Determinar el formato de la respuesta
+                if 'empaques' in api_response_val:
+                    packages = api_response_val['empaques']
+                elif 'empaques_procesados' in api_response_val:
+                    packages = api_response_val['empaques_procesados']
                 else:
-                    response_data['validation_error'] = api_response_val.get('error', 'Error al validar pendientes')
-                    response_data['unprocessed_packages'] = api_response_val.get('empaques_no_procesados', [])
-                    if 'empaques_invalidos' in api_response_val:
-                        # Opcional: log o manejar inválidos
-                        pass
-    
+                    packages = []
+
+                validated_count = 0
+                for pkg in packages:
+                    # Mapear campos de la respuesta al formato esperado por validar_empaque_pendiente
+                    pkg_mapped = {
+                        'product_id': pkg.get('id_producto'),
+                        'peso_nominal_g': pkg.get('peso_exacto_g'),
+                        'epc': pkg.get('epc'),
+                        'id_empaque': pkg.get('id_empaque')
+                    }
+                    input_value = pkg.get('epc') or str(pkg.get('id_empaque'))
+                    success_pkg, message = validar_empaque_pendiente(fridge.fridge_id, input_value, pkg_mapped)
+                    if success_pkg:
+                        validated_count += 1
+                response_data['validated_pending'] = validated_count
+                response_data['validation_message'] = f'{validated_count} empaques pendientes validados'
+            else:
+                response_data['validation_error'] = api_response_val.get('error', 'Error al validar pendientes')
+                response_data['unprocessed_packages'] = api_response_val.get('empaques_no_procesados', [])
+                if 'empaques_invalidos' in api_response_val:
+                    # Opcional: log o manejar inválidos
+                    pass
+
     return jsonify(response_data)
 
 
@@ -1121,29 +1109,95 @@ def devolver_venta_pendiente(fridge_id, venta_id):
 @app.route('/api/fridges/<fridge_id>/sync', methods=['POST'])
 def manual_sync(fridge_id):
     """
-    Fuerza el envío manual del inventario a la API real.
+    Obtiene el inventario desde la API real y lo sincroniza localmente.
     """
     fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
 
     if not fridge:
         return jsonify({
             'success': False,
-            'error': 'Neveras no encontrada'
+            'error': 'Nevera no encontrada'
         }), 404
 
     if not fridge.api_token:
         return jsonify({
             'success': False,
-            'error': 'La neveras no tiene token de API configurado'
+            'error': 'La nevera no tiene token de API configurado'
         }), 400
 
-    success, api_response, status = send_inventory_snapshot(fridge)
+    # Obtener inventario desde la API
+    success, api_response, status = send_to_api(
+        fridge,
+        f'/api/neveras/inventario/{int(fridge.real_fridge_id or fridge.fridge_id)}',
+        method='GET'
+    )
 
-    return jsonify({
-        'success': success,
-        'api_response': api_response,
-        'status_code': status
-    })
+    if not success:
+        return jsonify({
+            'success': False,
+            'error': api_response.get('error', 'Error al obtener inventario'),
+            'status_code': status
+        }), 400
+
+    # Procesar la respuesta y sincronizar empaques
+    synced_empaques = 0
+
+    if api_response.get('success') and 'empaques' in api_response:
+        # Sincronizar empaques
+        for emp in api_response['empaques']:
+            # Buscar si ya existe
+            existing = Empaque.query.filter(
+                (Empaque.fridge_id == fridge.fridge_id) &
+                (
+                    (Empaque.epc == emp.get('epc')) |
+                    (Empaque.id_empaque == emp.get('id_empaque'))
+                )
+            ).first()
+
+            if not existing:
+                # Buscar producto global por id_producto
+                producto_global = ProductoGlobal.query.filter_by(product_id=str(emp['id_producto'])).first()
+                if not producto_global:
+                    # Si no existe, crear placeholder
+                    logger.warning(f"Producto global {emp['id_producto']} no encontrado, creando placeholder...")
+                    producto_global = ProductoGlobal(
+                        product_id=str(emp['id_producto']),
+                        name=f'Producto {emp["id_producto"]}',
+                        description='Creado desde sincronización API',
+                        nominal_weight_g=emp.get('peso_exacto_g')
+                    )
+                    db.session.add(producto_global)
+
+                # Crear empaque
+                empaque = Empaque(
+                    fridge_id=fridge.fridge_id,
+                    producto_global_id=producto_global.id,
+                    epc=emp.get('epc'),
+                    id_empaque=emp.get('id_empaque'),
+                    peso_nominal_g=emp.get('peso_exacto_g')
+                )
+                db.session.add(empaque)
+                synced_empaques += 1
+
+        # Actualizar timestamp de última sincronización
+        fridge.last_sync = datetime.utcnow()
+        db.session.commit()
+
+        message = f'Inventario sincronizado: {synced_empaques} empaques agregados'
+        return jsonify({
+            'success': True,
+            'message': message,
+            'synced_empaques': synced_empaques,
+            'api_response': api_response,
+            'status_code': status
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Respuesta inválida de la API',
+            'api_response': api_response,
+            'status_code': status
+        }), 400
 
 
 @app.route('/api/fridges/<fridge_id>/validar-pendientes', methods=['POST'])

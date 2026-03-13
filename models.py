@@ -32,6 +32,9 @@ class Fridge(db.Model):
     is_door_open = db.Column(db.Boolean, nullable=False, default=False)
     weight_adjustment = db.Column(db.Float, nullable=False, default=0.0)
 
+    # Última sincronización con la API
+    last_sync = db.Column(db.DateTime, nullable=True)
+
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -50,6 +53,7 @@ class Fridge(db.Model):
             'temperature': self.temperature,
             'is_door_open': self.is_door_open,
             'weight_adjustment': self.weight_adjustment,
+            'last_sync': self.last_sync.isoformat() if self.last_sync else None,
             'has_token': self.api_token is not None,
             'products_ids': self.products_ids,
             'created_at': self.created_at.isoformat() if self.created_at else None,
