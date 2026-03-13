@@ -613,6 +613,49 @@ def update_temperature(fridge_id):
         }), 400
 
 
+@app.route('/api/fridges/<fridge_id>/weight-adjustment', methods=['PUT'])
+def update_fridge_weight_adjustment(fridge_id):
+    """
+    Actualiza el ajuste de peso de la nevera.
+
+    Expects JSON:
+    {
+        "weight_adjustment": 0.5
+    }
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    data = request.get_json()
+    weight_adjustment = data.get('weight_adjustment')
+
+    if weight_adjustment is None:
+        return jsonify({
+            'success': False,
+            'error': 'weight_adjustment es requerido'
+        }), 400
+
+    try:
+        fridge.weight_adjustment = float(weight_adjustment)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'data': {'weight_adjustment': fridge.weight_adjustment},
+            'message': 'Ajuste de peso actualizado'
+        })
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'error': 'Ajuste de peso inválido'
+        }), 400
+
+
 @app.route('/api/fridges/<fridge_id>/door', methods=['PUT'])
 def update_door(fridge_id):
     """

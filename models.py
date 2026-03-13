@@ -30,6 +30,7 @@ class Fridge(db.Model):
     # Estado simulado de sensores
     temperature = db.Column(db.Float, nullable=False, default=4.0)
     is_door_open = db.Column(db.Boolean, nullable=False, default=False)
+    weight_adjustment = db.Column(db.Float, nullable=False, default=0.0)
 
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
@@ -48,6 +49,7 @@ class Fridge(db.Model):
             'location': self.location,
             'temperature': self.temperature,
             'is_door_open': self.is_door_open,
+            'weight_adjustment': self.weight_adjustment,
             'has_token': self.api_token is not None,
             'products_ids': self.products_ids,
             'created_at': self.created_at.isoformat() if self.created_at else None,

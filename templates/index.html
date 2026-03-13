@@ -339,6 +339,32 @@
                                 </div>
                             </div>
                             <hr>
+                            <!-- Control de Peso Total -->
+                            <div class="mb-4">
+                                <label class="form-label">
+                                    <i class="bi bi-calculator me-1"></i>Peso Total del Inventario
+                                </label>
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <small class="text-muted d-block">peso inventario escaneado</small>
+                                        <div class="fw-bold text-primary">{{ Math.round(totalInventoryWeight) }} g</div>
+                                    </div>
+                                    <div class="col-6">
+                                        <small class="text-muted d-block">Ajuste/Desface</small>
+                                        <input type="number" class="form-control form-control-sm" step="1"
+                                            v-model.number="currentWeightAdjustment" placeholder="0">
+                                        <button class="btn btn-sm btn-primary mt-1" @click="saveWeightAdjustment" :disabled="savingWeightAdjustment">
+                                            <span v-if="savingWeightAdjustment" class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                            Guardar Ajuste/Desface
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="mt-2">
+                                    <small class="text-muted d-block">PESO REAL</small>
+                                    <div class="fw-bold text-success">{{ Math.round(adjustedTotalWeight) }} g</div>
+                                </div>
+                            </div>
+                            <hr>
                             <!-- Info de Conexión -->
                             <div class="row text-center">
                                 <div class="col-6">
@@ -655,6 +681,8 @@
             const lastSyncTime     = ref(null);
             const processingAction = ref(false);
             const processingEmpaqueId = ref(null);
+            const savingWeightAdjustment = ref(false);
+            const weightAdjustments = ref({});
 
             // ---- Toast ----
             const showToast    = ref(false);
@@ -665,6 +693,32 @@
             // ---- Computed ----
             const selectedFridge = computed(() =>
                 fridges.value.find(f => f.fridge_id === selectedFridgeId.value)
+            );
+
+            // Calcular peso total del inventario
+            const totalInventoryWeight = computed(() => {
+                let total = 0;
+                products.value.forEach(group => {
+                    group.empaques.forEach(emp => {
+                        if (emp.peso_nominal_g) {
+                            total += parseFloat(emp.peso_nominal_g);
+                        }
+                    });
+                });
+                return total;
+            });
+
+            // Ajuste de peso para la nevera actual
+            const currentWeightAdjustment = computed({
+                get: () => weightAdjustments.value[selectedFridgeId.value] || 0,
+                set: (value) => {
+                    weightAdjustments.value[selectedFridgeId.value] = parseFloat(value || 0);
+                }
+            });
+
+            // Peso total ajustado
+            const adjustedTotalWeight = computed(() =>
+                totalInventoryWeight.value + currentWeightAdjustment.value
             );
 
 
@@ -767,6 +821,7 @@
                 selectedFridgeId.value = id;
                 const f = selectedFridge.value;
                 if (f) temperatureValue.value = f.temperature;
+                weightAdjustments.value[selectedFridgeId.value] = f.weight_adjustment;
                 loadProducts(id);
                 loadEvents(id);
             };
@@ -893,6 +948,31 @@
                         if (f) f.temperature = d.data.temperature;
                     }
                 } catch(e) { console.error(e); }
+            };
+
+            // ---- Guardar Ajuste de Peso ----
+            const saveWeightAdjustment = async () => {
+                if (!selectedFridge.value) return;
+                savingWeightAdjustment.value = true;
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/weight-adjustment`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ weight_adjustment: currentWeightAdjustment.value })
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        const f = fridges.value.find(x => x.fridge_id === selectedFridgeId.value);
+                        if (f) f.weight_adjustment = d.data.weight_adjustment;
+                        displayToast('Éxito', 'Ajuste de peso guardado', 'bg-success text-white');
+                    } else {
+                        error.value = d.error;
+                    }
+                } catch(e) {
+                    error.value = 'Error de conexión';
+                } finally {
+                    savingWeightAdjustment.value = false;
+                }
             };
 
             // ---- Productos ----
@@ -1117,12 +1197,13 @@
                 showActivationModal, activationPassword, activating,
                 activationError, activationSuccess, showPassword,
                 showAddProductModal, newProduct,
-                processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId,
+                processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId, savingWeightAdjustment, currentWeightAdjustment,
+                totalInventoryWeight, adjustedTotalWeight,
                 showToast, toastTitle, toastMessage, toastClass,
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
                 incrementProduct, decrementProduct, deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque,
-                manualSync, validatePendingPackages, refreshAll, formatDate, displayToast
+                manualSync, validatePendingPackages, refreshAll, saveWeightAdjustment, formatDate, displayToast
             };
         }
     }).mount('#app');
