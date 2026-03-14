@@ -124,6 +124,8 @@ def send_to_api(fridge: Fridge, endpoint: str, method: str = 'POST', data: dict 
             response = requests.post(url, headers=headers, json=data, timeout=app.config['API_TIMEOUT'])
         elif method.upper() == 'PUT':
             response = requests.put(url, headers=headers, json=data, timeout=app.config['API_TIMEOUT'])
+        elif method.upper() == 'PATCH':
+            response = requests.patch(url, headers=headers, json=data, timeout=app.config['API_TIMEOUT'])
         else:
             raise ValueError(f"Método HTTP no soportado: {method}")
         
@@ -1413,7 +1415,7 @@ def send_pending_validation(fridge: Fridge) -> tuple:
     return send_to_api(
         fridge,
         '/api/neveras/validacionDosaTres',
-        method='POST',
+        method='PATCH',
         data=payload
     )
 

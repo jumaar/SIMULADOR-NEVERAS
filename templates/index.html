@@ -192,13 +192,19 @@
         </div>
 
         <!-- ===== MODAL AGREGAR EMPAQUE ===== -->
-        <div v-if="showAddProductModal" class="modal-overlay" @click.self="showAddProductModal = false">
+        <div v-if="showAddProductModal" class="modal-overlay" @click.self="closeAddProductModal">
             <div class="modal-box">
                 <div class="card shadow border-0 rounded-3">
                     <div class="card-header bg-dark text-white">
                         <h5 class="mb-0"><i class="bi bi-plus-circle me-2"></i>Agregar Empaque</h5>
                     </div>
                     <div class="card-body p-4">
+                        <!-- Error de validación al agregar empaque -->
+                        <div v-if="addProductError" class="alert alert-danger mb-3 d-flex align-items-center p-3" role="alert">
+                            <i class="bi bi-exclamation-triangle-fill me-2 fs-5"></i>
+                            <div>{{ addProductError }}</div>
+                        </div>
+
                         <div class="mb-3">
                             <label class="form-label">EPC o ID Empaque</label>
                             <input type="text" class="form-control" v-model="newProduct.input" placeholder="Ej: ABC123DEF456GHI789JKL012 (EPC) o 12345 (ID)">
@@ -211,7 +217,7 @@
                         </div>
                     </div>
                     <div class="card-footer d-flex justify-content-end gap-2">
-                        <button class="btn btn-secondary" @click="showAddProductModal = false">Cancelar</button>
+                        <button class="btn btn-secondary" @click="closeAddProductModal">Cancelar</button>
                         <button class="btn btn-primary" @click="addEmpaque" :disabled="!newProduct.input">
                             <i class="bi bi-plus-circle me-1"></i>Agregar
                         </button>
@@ -580,7 +586,7 @@
                             </div>
                         </div>
                         <div class="card-footer" v-if="selectedFridge.is_door_open">
-                            <button class="btn btn-primary" @click="showAddProductModal = true">
+                            <button class="btn btn-primary" @click="openAddProductModal">
                                 <i class="bi bi-plus-circle me-1"></i>Agregar Empaque
                             </button>
                         </div>
@@ -674,6 +680,7 @@
             // ---- Modal producto ----
             const showAddProductModal = ref(false);
             const newProduct = ref({ input: '' });
+            const addProductError = ref('');
 
             // ---- Estado puerta / temperatura ----
             const processingDoor   = ref(false);
@@ -923,7 +930,7 @@
                             if (d.api_synced) {
                                 displayToast('Sincronizado', 'Inventario enviado a la API', 'bg-success text-white');
                                 lastSyncTime.value = new Date().toLocaleTimeString();
-                            } else {
+                            } else if (d.api_synced === false || d.api_error) {
                                 displayToast('Advertencia', d.api_error || 'Error al sincronizar', 'bg-warning text-dark');
                             }
                             if (d.validation_message) {
@@ -1026,6 +1033,17 @@
                 } catch(e) { error.value = 'Error de conexión'; }
             };
 
+            const openAddProductModal = () => {
+                newProduct.value = { input: '' };
+                addProductError.value = '';
+                showAddProductModal.value = true;
+            };
+
+            const closeAddProductModal = () => {
+                showAddProductModal.value = false;
+                addProductError.value = '';
+            };
+
             const addEmpaque = async () => {
                 if (!selectedFridge.value || !newProduct.value.input) return;
                 try {
@@ -1035,12 +1053,11 @@
                     });
                     const d = await r.json();
                     if (d.success) {
-                        showAddProductModal.value = false;
-                        newProduct.value = { input: '' };
+                        closeAddProductModal();
                         await loadProducts(selectedFridgeId.value);
                         displayToast('Éxito', d.message, 'bg-success text-white');
-                    } else { error.value = d.error; }
-                } catch(e) { error.value = 'Error de conexión'; }
+                    } else { addProductError.value = d.error; }
+                } catch(e) { addProductError.value = 'Error de conexión'; }
             };
 
             const deleteEmpaque = async (empaque) => {
@@ -1211,13 +1228,13 @@
                 selectedFridge, productosGlobales, products, pendientes, ventasPendientes, events, apiStatus,
                 showActivationModal, activationPassword, activating,
                 activationError, activationSuccess, showPassword,
-                showAddProductModal, newProduct,
+                showAddProductModal, newProduct, addProductError,
                 processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId, savingWeightAdjustment, currentWeightAdjustment,
                 totalInventoryWeight, adjustedTotalWeight,
                 showToast, toastTitle, toastMessage, toastClass,
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
-                incrementProduct, decrementProduct, deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque,
+                incrementProduct, decrementProduct, deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque, openAddProductModal, closeAddProductModal,
                 manualSync, validatePendingPackages, refreshAll, saveWeightAdjustment, formatDate, displayToast
             };
         }
