@@ -12,12 +12,14 @@ import os
 import json
 import time
 import logging
+import threading
 from datetime import datetime
 from functools import wraps
 
 import requests
 from flask import Flask, render_template, request, jsonify, current_app
 from flask_cors import CORS
+from flask_migrate import Migrate
 from dotenv import load_dotenv
 
 from models import db, Fridge, ProductoGlobal, Empaque, EmpaquePendiente, EventLog, VentaPendiente
@@ -41,6 +43,9 @@ class Config:
     API_BASE_URL = os.environ.get('API_BASE_URL', 'https://api.vorak.app')
     API_TIMEOUT = int(os.environ.get('API_TIMEOUT', '30'))
 
+# Variables globales para manejar hilos en segundo plano
+active_timers = {}
+
 # Crear aplicación Flask
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -59,6 +64,9 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Inicializar SQLAlchemy
 db.init_app(app)
+
+# Inicializar Flask-Migrate
+migrate = Migrate(app, db)
 
 # Configurar logging
 logging.basicConfig(
@@ -131,7 +139,7 @@ def send_to_api(fridge: Fridge, endpoint: str, method: str = 'POST', data: dict 
         
         # Actualizar log
         event_log.response_status = response.status_code
-        event_log.response_body = response.text[:1000] if response.text else None
+        event_log.response_body = response.text[:5000] if response.text else None
         event_log.success = 200 <= response.status_code < 300
         
         db.session.add(event_log)
@@ -144,7 +152,13 @@ def send_to_api(fridge: Fridge, endpoint: str, method: str = 'POST', data: dict 
                 return True, {'message': 'Success'}, response.status_code
         else:
             logger.error(f"Error de API: {response.status_code} - {response.text}")
-            return False, {'error': response.text}, response.status_code
+            error_data = {'error': response.text}
+            try:
+                if response.text:
+                    error_data = response.json()
+            except:
+                pass
+            return False, error_data, response.status_code
             
     except requests.exceptions.Timeout:
         logger.error(f"Timeout contacting API: {url}")
@@ -353,6 +367,9 @@ def sync_from_api() -> tuple:
             if existing_fridge.fridge_id not in active_fridge_ids:
                 # Eliminar empaques de neveras no activas
                 Empaque.query.filter_by(fridge_id=existing_fridge.fridge_id).delete()
+                EmpaquePendiente.query.filter_by(fridge_id=existing_fridge.fridge_id).delete()
+                VentaPendiente.query.filter_by(fridge_id=existing_fridge.fridge_id).delete()
+                EventLog.query.filter_by(fridge_id=existing_fridge.fridge_id).delete()
                 # Eliminar la nevera
                 db.session.delete(existing_fridge)
                 logger.info(f"Nevera {existing_fridge.fridge_id} eliminada (no está activa)")
@@ -541,7 +558,7 @@ def get_fridge(fridge_id):
     if not fridge:
         return jsonify({
             'success': False,
-            'error': 'Neveras no encontrada'
+            'error': 'Nevera no encontrada'
         }), 404
     
     return jsonify({
@@ -560,15 +577,20 @@ def delete_fridge(fridge_id):
     if not fridge:
         return jsonify({
             'success': False,
-            'error': 'Neveras no encontrada'
+            'error': 'Nevera no encontrada'
         }), 404
     
+    Empaque.query.filter_by(fridge_id=fridge_id).delete()
+    EmpaquePendiente.query.filter_by(fridge_id=fridge_id).delete()
+    VentaPendiente.query.filter_by(fridge_id=fridge_id).delete()
+    EventLog.query.filter_by(fridge_id=fridge_id).delete()
+
     db.session.delete(fridge)
     db.session.commit()
     
     return jsonify({
         'success': True,
-        'message': f'Neveras {fridge_id} eliminada del simulador'
+        'message': f'Nevera {fridge_id} eliminada del simulador'
     })
 
 
@@ -587,7 +609,7 @@ def update_temperature(fridge_id):
     if not fridge:
         return jsonify({
             'success': False,
-            'error': 'Neveras no encontrada'
+            'error': 'Nevera no encontrada'
         }), 404
     
     data = request.get_json()
@@ -674,7 +696,7 @@ def update_door(fridge_id):
     if not fridge:
         return jsonify({
             'success': False,
-            'error': 'Neveras no encontrada'
+            'error': 'Nevera no encontrada'
         }), 404
     
     data = request.get_json()
@@ -694,6 +716,26 @@ def update_door(fridge_id):
         'data': fridge.to_dict(),
         'message': 'Puerta abierta' if is_door_open else 'Puerta cerrada'
     }
+
+    # Manejo del temporizador de liquidación de ventas en segundo plano
+    if is_door_open:
+        if fridge_id in active_timers:
+            active_timers[fridge_id]['timer'].cancel()
+            del active_timers[fridge_id]
+            logger.info(f"Temporizador de liquidación CANCELADO para {fridge_id} (puerta abierta)")
+    else:
+        ventas_count = VentaPendiente.query.filter_by(fridge_id=fridge.fridge_id).count()
+        if ventas_count > 0:
+            if fridge_id in active_timers:
+                active_timers[fridge_id]['timer'].cancel()
+            
+            # Iniciar nuevo timer de 60 segundos
+            timer = threading.Timer(60.0, run_background_liquidation, args=[fridge.fridge_id])
+            timer.start()
+            expires_at = int(time.time()) + 60
+            active_timers[fridge_id] = {'timer': timer, 'expires_at': expires_at}
+            response_data['liquidation_expires_at'] = expires_at
+            logger.info(f"Temporizador de liquidación INICIADO para {fridge_id} (60s)")
 
     # Si se cierra la puerta, validar empaques pendientes si hay
     if not is_door_open:
@@ -1108,6 +1150,81 @@ def devolver_venta_pendiente(fridge_id, venta_id):
         }), 500
 
 
+def process_liquidation_logic(fridge_id):
+    """Lógica central para procesar las ventas pendientes hacia la API real."""
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+    if not fridge:
+        return False, 'Nevera no encontrada', [], [], 404
+
+    ventas = VentaPendiente.query.filter_by(fridge_id=fridge_id).all()
+    if not ventas:
+        return True, 'No hay ventas pendientes', [], [], 200
+
+    empaques_payload = []
+    for v in ventas:
+        fecha_iso = v.created_at.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        empaques_payload.append({
+            "id_empaque": v.id_empaque,
+            "epc": v.epc,
+            "fecha_venta": fecha_iso
+        })
+
+    payload = {"empaques": empaques_payload}
+    logger.info(f"Payload enviado en liquidación para {fridge_id}: {json.dumps(payload, indent=2)}")
+    
+    success, api_response, status = send_to_api(fridge, '/api/neveras/inventario', method='PATCH', data=payload)
+
+    if success:
+        procesados = api_response.get('empaques_procesados', [])
+        no_procesados = api_response.get('empaques_no_procesados', [])
+
+        for p in procesados:
+            epc, id_emp = p.get('epc'), p.get('id_empaque')
+            v_to_delete = None
+            if epc:
+                v_to_delete = VentaPendiente.query.filter_by(fridge_id=fridge_id, epc=epc).first()
+            if not v_to_delete and id_emp:
+                v_to_delete = VentaPendiente.query.filter_by(fridge_id=fridge_id, id_empaque=id_emp).first()
+            
+            if v_to_delete:
+                db.session.delete(v_to_delete)
+                
+        db.session.commit()
+        return True, api_response.get('message', 'Ventas liquidadas con éxito'), procesados, no_procesados, status
+    else:
+        return False, api_response.get('error', 'Error en la API'), [], api_response.get('empaques_no_procesados', []), status
+
+
+def run_background_liquidation(fridge_id):
+    """Ejecuta la liquidación de ventas en segundo plano al terminar el hilo."""
+    with app.app_context():
+        try:
+            logger.info(f"Ejecutando liquidación en 2do plano para {fridge_id}")
+            success, message, proc, no_proc, status = process_liquidation_logic(fridge_id)
+        except Exception as e:
+            logger.error(f"Error en liquidación 2do plano {fridge_id}: {e}")
+        finally:
+            if fridge_id in active_timers:
+                del active_timers[fridge_id]
+
+
+@app.route('/api/fridges/<fridge_id>/liquidar-ventas', methods=['POST'])
+def liquidar_ventas(fridge_id):
+    """
+    Toma todas las ventas pendientes de la nevera y envía la petición PATCH.
+    (Mantenemos la ruta como fallback manual, pero la lógica ahora es delegada)
+    """
+    success, message, proc, no_proc, status = process_liquidation_logic(fridge_id)
+    
+    if success:
+        return jsonify({
+            'success': True, 'message': message,
+            'procesados': proc, 'no_procesados': no_proc
+        }), status
+    else:
+        return jsonify({'success': False, 'error': message, 'api_response': {'empaques_no_procesados': no_proc}}), status
+
+
 @app.route('/api/fridges/<fridge_id>/sync', methods=['POST'])
 def manual_sync(fridge_id):
     """
@@ -1130,7 +1247,7 @@ def manual_sync(fridge_id):
     # Obtener inventario desde la API
     success, api_response, status = send_to_api(
         fridge,
-        f'/api/neveras/inventario/{int(fridge.real_fridge_id or fridge.fridge_id)}',
+        '/api/neveras/inventario',
         method='GET'
     )
 
@@ -1343,41 +1460,6 @@ def health_check():
 # FUNCIONES DE EVENTOS
 # =============================================================================
 
-def send_inventory_snapshot(fridge: Fridge) -> tuple:
-    """
-    Envía el snapshot del inventario a la API real.
-    Este es el equivalente simulado de la lectura RFID.
-
-    Args:
-        fridge: Instancia del modelo Fridge
-
-    Returns:
-        tuple: (success: bool, response: dict, status_code: int)
-    """
-    # Recopilar inventario actual (empaques)
-    empaques = Empaque.query.filter_by(fridge_id=fridge.fridge_id).all()
-
-    inventory = [e.to_inventory_dict() for e in empaques]
-
-    # Construir payload con solo IDs de empaques validados
-    empaque_ids = [e.id_empaque or e.epc for e in empaques]
-    payload = {
-        'fridge_id': int(fridge.real_fridge_id or fridge.fridge_id),
-        'timestamp': int(time.time()),
-        'empaque_ids': empaque_ids
-    }
-
-    logger.info(f"Enviando IDs de empaques para inventario {fridge.fridge_id}: {len(empaque_ids)} empaques")
-
-    # Enviar a la API real
-    return send_to_api(
-        fridge,
-        f'/api/nevera/inventario/{int(fridge.real_fridge_id or fridge.fridge_id)}',
-        method='POST',
-        data=payload
-    )
-
-
 def send_pending_validation(fridge: Fridge) -> tuple:
     """
     Envía la lista de empaques pendientes para validación a la API real.
@@ -1404,7 +1486,6 @@ def send_pending_validation(fridge: Fridge) -> tuple:
 
     # Construir payload
     payload = {
-        'fridge_id': int(fridge.real_fridge_id or fridge.fridge_id),
         'timestamp': int(time.time()),
         'pending_packages': pending_packages
     }

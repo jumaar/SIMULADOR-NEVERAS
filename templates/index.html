@@ -398,13 +398,20 @@
                 <div class="col-lg-8 mb-4">
                     <div class="card shadow-sm" :class="{ 'inventory-locked': !selectedFridge.is_door_open }">
                         <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0"><i class="bi bi-clock me-2"></i>Ventas Pendientes de Liquidar</h5>
-                            <span class="badge bg-warning text-dark" v-if="!selectedFridge.is_door_open">
-                                <i class="bi bi-lock me-1"></i>Bloqueado
-                            </span>
-                            <span class="badge bg-success" v-else>
-                                <i class="bi bi-unlock me-1"></i>Desbloqueado
-                            </span>
+                            <div>
+                                <h5 class="mb-0 d-inline-block"><i class="bi bi-clock me-2"></i>Ventas Pendientes de Liquidar</h5>
+                                <span v-if="currentLiquidationRemaining > 0" class="badge bg-danger ms-2 align-top">
+                                    <i class="bi bi-stopwatch"></i> Liquidando en {{ currentLiquidationRemaining }}s
+                                </span>
+                            </div>
+                            <div>
+                                <span class="badge bg-warning text-dark" v-if="!selectedFridge.is_door_open">
+                                    <i class="bi bi-lock me-1"></i>Bloqueado
+                                </span>
+                                <span class="badge bg-success" v-else>
+                                    <i class="bi bi-unlock me-1"></i>Desbloqueado
+                                </span>
+                            </div>
                         </div>
                         <div class="card-body p-0">
                             <div class="table-responsive">
@@ -610,6 +617,7 @@
                                             <th>Evento</th>
                                             <th>Estado</th>
                                             <th>Código</th>
+                                            <th>Respuesta (JSON)</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -622,9 +630,14 @@
                                                 </span>
                                             </td>
                                             <td>{{ event.response_status || '-' }}</td>
+                                            <td>
+                                                <div style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" :title="event.response_body">
+                                                    <small class="text-muted">{{ event.response_body || '-' }}</small>
+                                                </div>
+                                            </td>
                                         </tr>
                                         <tr v-if="events.length === 0">
-                                            <td colspan="4" class="text-center text-muted">No hay eventos registrados</td>
+                                            <td colspan="5" class="text-center text-muted">No hay eventos registrados</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -689,12 +702,14 @@
             const processingEmpaqueId = ref(null);
             const savingWeightAdjustment = ref(false);
             const weightAdjustments = ref({});
+            const liquidationTimers = ref({}); // { fridge_id: expiration_timestamp }
+            const currentTime = ref(Math.floor(Date.now() / 1000));
 
             // ---- Toast ----
             const showToast    = ref(false);
             const toastTitle   = ref('');
             const toastMessage = ref('');
-            const toastClass   = ref('bg-success text-white');
+            const toastClass   = ref('');
 
             // ---- Computed ----
             const selectedFridge = computed(() =>
@@ -742,6 +757,13 @@
                 });
             });
 
+            // Obtener el tiempo restante para la nevera seleccionada
+            const currentLiquidationRemaining = computed(() => {
+                if (!selectedFridgeId.value || !liquidationTimers.value[selectedFridgeId.value]) return 0;
+                const exp = liquidationTimers.value[selectedFridgeId.value];
+                if (exp === 0) return 0;
+                return Math.max(0, exp - currentTime.value);
+            });
 
             // ---- Helpers ----
             const displayToast = (title, message, cls) => {
@@ -927,6 +949,11 @@
                         await loadEvents(selectedFridgeId.value);
                         await loadProducts(selectedFridgeId.value);  // Recargar productos después de cerrar puerta
                         if (!newState) {
+                            // Al CERRAR, tomar timestamp de la respuesta para cronómetro
+                            if (d.liquidation_expires_at) {
+                                liquidationTimers.value[selectedFridgeId.value] = d.liquidation_expires_at;
+                            }
+
                             if (d.api_synced) {
                                 displayToast('Sincronizado', 'Inventario enviado a la API', 'bg-success text-white');
                                 lastSyncTime.value = new Date().toLocaleTimeString();
@@ -934,9 +961,8 @@
                                 displayToast('Advertencia', d.api_error || 'Error al sincronizar', 'bg-warning text-dark');
                             }
                             if (d.validation_message) {
-                                displayToast('Validación Completada', d.validation_message, 'bg-success text-white');
-                            }
-                            if (d.validation_error) {
+                                displayToast('Validación', d.validation_message, 'bg-success text-white');
+                            } else if (d.validation_error) {
                                 displayToast('Error de Validación', d.validation_error, 'bg-warning text-dark');
                             }
                             if (d.unprocessed_packages && d.unprocessed_packages.length > 0) {
@@ -945,6 +971,9 @@
                                     displayToast('Error de Validación', `Empaque ${identifier} no procesado: ${pkg.error}. Ubicado en nevera ${pkg.id_nevera}`, 'bg-danger text-white');
                                 });
                             }
+                        } else {
+                            // Al ABRIR la puerta, cancelar el temporizador visual
+                            liquidationTimers.value[selectedFridgeId.value] = 0;
                         }
                     } else { error.value = d.error; }
                 } catch(e) {
@@ -994,43 +1023,6 @@
                 } finally {
                     savingWeightAdjustment.value = false;
                 }
-            };
-
-            // ---- Productos ----
-            const incrementProduct = async (product) => {
-                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
-                try {
-                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, {
-                        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ quantity: product.quantity + 1 })
-                    });
-                    const d = await r.json();
-                    if (d.success) product.quantity = d.data.quantity;
-                    else error.value = d.error;
-                } catch(e) { error.value = 'Error de conexión'; }
-            };
-
-            const decrementProduct = async (product) => {
-                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
-                try {
-                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, {
-                        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ quantity: Math.max(0, product.quantity - 1) })
-                    });
-                    const d = await r.json();
-                    if (d.success) product.quantity = d.data.quantity;
-                } catch(e) { error.value = 'Error de conexión'; }
-            };
-
-            const deleteProduct = async (product) => {
-                if (!selectedFridge.value || !selectedFridge.value.is_door_open) return;
-                if (!confirm(`¿Eliminar ${product.name}?`)) return;
-                try {
-                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/products/${product.product_id}`, { method: 'DELETE' });
-                    const d = await r.json();
-                    if (d.success) await loadProducts(selectedFridgeId.value);
-                    else error.value = d.error;
-                } catch(e) { error.value = 'Error de conexión'; }
             };
 
             const openAddProductModal = () => {
@@ -1137,6 +1129,33 @@
                 }
             };
 
+            const liquidarVentas = async (targetId) => {
+                const fridgeId = targetId || selectedFridgeId.value;
+                if (!fridgeId) return;
+                try {
+                    const r = await fetch(`/api/fridges/${fridgeId}/liquidar-ventas`, { method: 'POST' });
+                    const d = await r.json();
+                    
+                    if (d.success && d.message !== 'No hay ventas pendientes') {
+                        if (d.procesados && d.procesados.length > 0) {
+                            displayToast('Ventas Liquidadas', `Se procesaron ${d.procesados.length} ventas en la API`, 'bg-success text-white');
+                        }
+                        if (d.no_procesados && d.no_procesados.length > 0) {
+                            d.no_procesados.forEach(np => {
+                                displayToast('Advertencia de Liquidación', `No procesado empaque ${np.epc || np.id_empaque}: ${np.error || 'Inválido'}`, 'bg-warning text-dark');
+                            });
+                        }
+                        // Solo recargar productos en pantalla si el usuario sigue viendo esa misma nevera
+                        if (selectedFridgeId.value === fridgeId) {
+                            await loadProducts(fridgeId);
+                            await loadEvents(fridgeId);
+                        }
+                    } else if (!d.success) {
+                        displayToast('Error', d.error || 'Error al liquidar ventas', 'bg-danger text-white');
+                    }
+                } catch(e) { console.error('Error liquidando ventas:', e); }
+            };
+
             // ---- Sync manual ----
             const manualSync = async () => {
                 if (!selectedFridge.value) return;
@@ -1218,6 +1237,51 @@
 
             // ---- Init ----
             onMounted(async () => {
+                // Bucle de cronómetro visual universal (cada segundo)
+                setInterval(() => {
+                    const now = Math.floor(Date.now() / 1000);
+                    currentTime.value = now;
+                    
+                    // Refrescar tabla si un contador acaba de llegar a 0
+                    for (const fId of Object.keys(liquidationTimers.value)) {
+                        const exp = liquidationTimers.value[fId];
+                        if (exp > 0 && exp <= now) {
+                            liquidationTimers.value[fId] = 0; // Finalizado
+                            setTimeout(async () => {
+                                if (selectedFridgeId.value === fId) {
+                                    await loadProducts(fId);
+                                    await loadEvents(fId);
+                                    
+                                    // Interceptar el último evento para mostrar la respuesta de la liquidación en Toasts
+                                    if (events.value.length > 0) {
+                                        const lastEvent = events.value[0];
+                                        let eventDateStr = lastEvent.created_at;
+                                        if (!eventDateStr.endsWith('Z')) eventDateStr += 'Z'; // Forzar UTC para evitar desfase
+                                        const eventTime = new Date(eventDateStr).getTime();
+                                        
+                                        // Si el último evento fue a inventario y ocurrió en los últimos 15 segs
+                                        if (lastEvent.event_type === '/api/neveras/inventario' && (Date.now() - eventTime) < 15000) {
+                                            try {
+                                                const resp = JSON.parse(lastEvent.response_body);
+                                                if (lastEvent.success) {
+                                                    displayToast('Ventas Liquidadas', resp.message || 'Inventario procesado con éxito', 'bg-success text-white');
+                                                    if (resp.empaques_no_procesados && resp.empaques_no_procesados.length > 0) {
+                                                        resp.empaques_no_procesados.forEach(np => {
+                                                            displayToast('Advertencia de Liquidación', `No procesado empaque ${np.epc || np.id_empaque}: ${np.error || 'Inválido'}`, 'bg-warning text-dark');
+                                                        });
+                                                    }
+                                                } else {
+                                                    displayToast('Error de Liquidación', resp.error || 'Error al liquidar ventas', 'bg-danger text-white');
+                                                }
+                                            } catch(e) { console.error('Error parseando respuesta JSON:', e); }
+                                        }
+                                    }
+                                }
+                            }, 2000); // 2 segs extra de margen para el backend
+                        }
+                    }
+                }, 1000);
+
                 await loadProductosGlobales();
                 await loadFridges();
                 await checkApiStatus();
@@ -1229,12 +1293,12 @@
                 showActivationModal, activationPassword, activating,
                 activationError, activationSuccess, showPassword,
                 showAddProductModal, newProduct, addProductError,
-                processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId, savingWeightAdjustment, currentWeightAdjustment,
-                totalInventoryWeight, adjustedTotalWeight,
+                processingDoor, temperatureValue, lastSyncTime, processingAction, processingEmpaqueId, savingWeightAdjustment, 
+                currentWeightAdjustment, currentLiquidationRemaining, totalInventoryWeight, adjustedTotalWeight,
                 showToast, toastTitle, toastMessage, toastClass,
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
-                incrementProduct, decrementProduct, deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque, openAddProductModal, closeAddProductModal,
+                deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque, openAddProductModal, closeAddProductModal,
                 manualSync, validatePendingPackages, refreshAll, saveWeightAdjustment, formatDate, displayToast
             };
         }

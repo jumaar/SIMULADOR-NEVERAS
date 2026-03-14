@@ -1,6 +1,7 @@
 # Flask y extensiones
 Flask==3.0.0
 Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.5
 Flask-CORS==4.0.0
 
 # Base de datos

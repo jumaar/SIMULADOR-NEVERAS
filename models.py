@@ -35,6 +35,9 @@ class Fridge(db.Model):
     # Última sincronización con la API
     last_sync = db.Column(db.DateTime, nullable=True)
 
+    # Versión del software simulado
+    version_software = db.Column(db.String(50), nullable=True, default='1.0.0')
+
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -54,6 +57,7 @@ class Fridge(db.Model):
             'is_door_open': self.is_door_open,
             'weight_adjustment': self.weight_adjustment,
             'last_sync': self.last_sync.isoformat() if self.last_sync else None,
+            'version_software': self.version_software,
             'has_token': self.api_token is not None,
             'products_ids': self.products_ids,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -237,6 +241,8 @@ class EventLog(db.Model):
             'event_type': self.event_type,
             'success': self.success,
             'response_status': self.response_status,
+            'payload': self.payload,
+            'response_body': self.response_body,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
