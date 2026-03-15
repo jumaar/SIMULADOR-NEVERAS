@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.env
+simulator.db
+data/
+migrations/
+.git/
+.gitignore
+*.md
+/instance/
+*.sqlite

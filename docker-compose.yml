@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  vorak-app:
+    build: .
+    container_name: vorak_nevera_app
+    restart: unless-stopped
+    ports:
+      # Mapea el puerto solo al localhost de la nevera por seguridad (127.0.0.1)
+      - "127.0.0.1:5001:5001"
+    volumes:
+      # Mapea la carpeta data local a la de app/data para que SQLite sobreviva a los reinicios
+      - ./data:/app/data
+    environment:
+      - FLASK_DEBUG=False
+      - API_BASE_URL=https://api.vorak.app
+      - PORT=5001
+      - DATABASE_URL=sqlite:////app/data/simulator.db
