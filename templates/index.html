@@ -1260,7 +1260,7 @@
                                         const eventTime = new Date(eventDateStr).getTime();
                                         
                                         // Si el último evento fue a inventario y ocurrió en los últimos 15 segs
-                                        if (lastEvent.event_type === '/api/neveras/inventario' && (Date.now() - eventTime) < 15000) {
+                                        if (lastEvent.event_type.includes('/api/neveras/inventario') && (Date.now() - eventTime) < 15000) {
                                             try {
                                                 const resp = JSON.parse(lastEvent.response_body);
                                                 if (lastEvent.success) {

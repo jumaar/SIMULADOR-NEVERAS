@@ -118,7 +118,7 @@ def send_to_api(fridge: Fridge, endpoint: str, method: str = 'POST', data: dict 
     # Registrar el evento en la base de datos
     event_log = EventLog(
         fridge_id=fridge.fridge_id,
-        event_type=endpoint,
+        event_type=f"[{method.upper()}] {endpoint}",
         payload=json.dumps(data) if data else None,
         success=False
     )
@@ -1170,8 +1170,7 @@ def process_liquidation_logic(fridge_id):
         })
 
     payload = {"empaques": empaques_payload}
-    logger.info(f"Payload enviado en liquidación para {fridge_id}: {json.dumps(payload, indent=2)}")
-    
+
     success, api_response, status = send_to_api(fridge, '/api/neveras/inventario', method='PATCH', data=payload)
 
     if success:
@@ -1199,7 +1198,6 @@ def run_background_liquidation(fridge_id):
     """Ejecuta la liquidación de ventas en segundo plano al terminar el hilo."""
     with app.app_context():
         try:
-            logger.info(f"Ejecutando liquidación en 2do plano para {fridge_id}")
             success, message, proc, no_proc, status = process_liquidation_logic(fridge_id)
         except Exception as e:
             logger.error(f"Error en liquidación 2do plano {fridge_id}: {e}")
