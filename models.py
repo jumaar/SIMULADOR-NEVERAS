@@ -252,8 +252,8 @@ class EventLog(db.Model):
 
 class VentaPendiente(db.Model):
     """
-    Representa una venta pendiente de liquidación.
-    Productos que han sido vendidos pero aún no liquidados con la API.
+    Representa una venta pendiente de validación.
+    Productos que han sido vendidos pero aún no validados con la API.
     """
     __tablename__ = 'ventas_pendientes'
 
@@ -268,8 +268,8 @@ class VentaPendiente(db.Model):
     # Datos del producto vendido
     peso_nominal_g = db.Column(db.Float, nullable=True)
 
-    # Estado de liquidación
-    estado = db.Column(db.String(20), nullable=False, default='pendiente')  # pendiente, liquidado, error, devuelto, validado
+    # Estado de validación
+    estado = db.Column(db.String(20), nullable=False, default='pendiente')  # pendiente, validado
 
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)

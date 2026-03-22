@@ -399,9 +399,9 @@
                     <div class="card shadow-sm" :class="{ 'inventory-locked': !selectedFridge.is_door_open }">
                         <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
                             <div>
-                                <h5 class="mb-0 d-inline-block"><i class="bi bi-clock me-2"></i>Ventas Pendientes de Liquidar</h5>
+                                <h5 class="mb-0 d-inline-block"><i class="bi bi-clock me-2"></i>Ventas Pendientes de Validar</h5>
                                 <span v-if="currentLiquidationRemaining > 0" class="badge bg-danger ms-2 align-top">
-                                    <i class="bi bi-stopwatch"></i> Liquidando en {{ currentLiquidationRemaining }}s
+                                    <i class="bi bi-stopwatch"></i> Validando en {{ currentLiquidationRemaining }}s
                                 </span>
                             </div>
                             <div>
@@ -436,9 +436,7 @@
                                             <td class="text-center">
                                                 <span class="badge" :class="{
                                                     'bg-warning text-dark': venta.estado === 'pendiente',
-                                                    'bg-success': venta.estado === 'validado',
-                                                    'bg-info': venta.estado === 'devuelto',
-                                                    'bg-secondary': venta.estado === 'liquidado'
+                                                    'bg-success': venta.estado === 'validado'
                                                 }">
                                                     {{ venta.estado }}
                                                 </span>
@@ -846,7 +844,7 @@
                         pendientes.value = d2.data.map(e => ({ ...e, tipo: 'pendiente', product_name: 'Pendiente validación' }));
 
                         // Ventas pendientes
-                        ventasPendientes.value = d3.data;
+                        ventasPendientes.value = d3.data.filter(v => ['pendiente', 'validado'].includes(v.estado));
                     }
                 } catch(e) { console.error(e); }
             };

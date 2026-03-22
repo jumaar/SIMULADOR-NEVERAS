@@ -1212,7 +1212,7 @@ def process_liquidation_logic(fridge_id):
     # Solo procesar ventas pendientes que estén en estado 'pendiente'
     ventas = VentaPendiente.query.filter(
         (VentaPendiente.fridge_id == fridge_id) &
-        (VentaPendiente.estado == 'pendiente')  # Solo procesar ventas pendientes normales, no las validadas/devueltas
+        (VentaPendiente.estado == 'pendiente')  # Solo procesar ventas pendientes normales, no las validadas
     ).all()
     
     if not ventas:
@@ -1234,8 +1234,12 @@ def process_liquidation_logic(fridge_id):
     if success:
         procesados = api_response.get('empaques_procesados', [])
         no_procesados = api_response.get('empaques_no_procesados', [])
+        pendientes_pago = api_response.get('empaques_pendiente_pago', [])
 
-        for p in procesados:
+        # Unimos ambas listas para procesar tanto los exitosos como los pendientes de pago
+        todos_procesados = procesados + pendientes_pago
+
+        for p in todos_procesados:
             epc, id_emp = p.get('epc'), p.get('id_empaque')
             v_to_update = None
             if epc:
@@ -1244,11 +1248,11 @@ def process_liquidation_logic(fridge_id):
                 v_to_update = VentaPendiente.query.filter_by(fridge_id=fridge_id, id_empaque=id_emp).first()
             
             if v_to_update:
-                # Cambiar estado a 'liquidado' en lugar de eliminar
-                v_to_update.estado = 'liquidado'
+                # Cambiar estado a 'validado' para que se sigan mostrando en el frontend
+                v_to_update.estado = 'validado'
                 
         db.session.commit()
-        return True, api_response.get('message', 'Ventas liquidadas con éxito'), procesados, no_procesados, status
+        return True, api_response.get('message', 'Ventas liquidadas con éxito'), todos_procesados, no_procesados, status
     else:
         return False, api_response.get('error', 'Error en la API'), [], api_response.get('empaques_no_procesados', []), status
 
@@ -1263,63 +1267,6 @@ def run_background_liquidation(fridge_id):
         finally:
             if fridge_id in active_timers:
                 del active_timers[fridge_id]
-
-
-@app.route('/api/fridges/<fridge_id>/ventas-pendientes/<venta_id>/validar', methods=['POST'])
-def validar_venta_devuelta(fridge_id, venta_id):
-    """
-    Cambia el estado de una venta pendiente de 'devuelto' a 'validado'.
-    Esta función se llama cuando el backend cambia el estado de 4 a 3.
-    """
-    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
-
-    if not fridge:
-        return jsonify({
-            'success': False,
-            'error': 'Nevera no encontrada'
-        }), 404
-
-    venta_pendiente = VentaPendiente.query.filter_by(id=venta_id, fridge_id=fridge_id).first()
-
-    if not venta_pendiente:
-        return jsonify({
-            'success': False,
-            'error': 'Venta pendiente no encontrada'
-        }), 404
-
-    # Obtener el nombre del producto antes de la transacción
-    producto_name = "Producto desconocido"
-    if venta_pendiente.producto_global:
-        producto_name = venta_pendiente.producto_global.name
-    elif venta_pendiente.producto_global_id:
-        # Si no está cargado, buscar el producto
-        producto_global = ProductoGlobal.query.get(venta_pendiente.producto_global_id)
-        if producto_global:
-            producto_name = producto_global.name
-
-    try:
-        # Cambiar el estado de la venta pendiente de 'devuelto' a 'validado'
-        if venta_pendiente.estado == 'devuelto':
-            venta_pendiente.estado = 'validado'
-            db.session.commit()
-
-            return jsonify({
-                'success': True,
-                'message': f'Producto marcado como validado: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': f'El estado actual de la venta es {venta_pendiente.estado}, no se puede validar directamente'
-            }), 400
-
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error al validar venta devuelta: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': f'Error al validar producto: {str(e)}'
-        }), 500
 
 
 @app.route('/api/fridges/<fridge_id>/liquidar-ventas', methods=['POST'])
