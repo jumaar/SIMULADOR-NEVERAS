@@ -1084,7 +1084,9 @@ def vender_empaque(fridge_id, empaque_id):
 @app.route('/api/fridges/<fridge_id>/ventas-pendientes/<venta_id>/devolver', methods=['POST'])
 def devolver_venta_pendiente(fridge_id, venta_id):
     """
-    Cambia el estado de una venta pendiente de 'pendiente' o 'validado' a 'devuelto'.
+    Devuelve un empaque de ventas pendientes a la estantería.
+    Si estaba 'pendiente' -> va a estantería validada.
+    Si estaba 'validado' -> va a estantería pendiente.
     Solo funciona si la puerta está ABIERTA.
     """
     fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
@@ -1120,14 +1122,73 @@ def devolver_venta_pendiente(fridge_id, venta_id):
             producto_name = producto_global.name
 
     try:
-        # Cambiar el estado de la venta pendiente a 'devuelto' independientemente del estado anterior
-        venta_pendiente.estado = 'devuelto'
+        # Determinar dónde devolver el empaque según su estado actual
+        if venta_pendiente.estado == 'pendiente':
+            # Devolver a estantería validada (Empaque)
+            # Verificar que no exista ya
+            existing = Empaque.query.filter(
+                (Empaque.fridge_id == fridge_id) &
+                (
+                    (Empaque.epc == venta_pendiente.epc) |
+                    (Empaque.id_empaque == venta_pendiente.id_empaque)
+                )
+            ).first()
 
+            if existing:
+                return jsonify({
+                    'success': False,
+                    'error': f'Empaque ya existe en la estantería validada'
+                }), 400
+
+            empaque = Empaque(
+                fridge_id=fridge_id,
+                producto_global_id=venta_pendiente.producto_global_id,
+                epc=venta_pendiente.epc,
+                id_empaque=venta_pendiente.id_empaque,
+                peso_nominal_g=venta_pendiente.peso_nominal_g
+            )
+            db.session.add(empaque)
+            logger.info(f"Empaque devuelto a estantería validada: {venta_pendiente.epc or f'ID:{venta_pendiente.id_empaque}'}")
+
+        elif venta_pendiente.estado == 'validado':
+            # Devolver a estantería pendiente (EmpaquePendiente)
+            # Verificar que no exista ya
+            existing = EmpaquePendiente.query.filter(
+                (EmpaquePendiente.fridge_id == fridge_id) &
+                (
+                    (EmpaquePendiente.epc == venta_pendiente.epc) |
+                    (EmpaquePendiente.id_empaque == venta_pendiente.id_empaque)
+                )
+            ).first()
+
+            if existing:
+                return jsonify({
+                    'success': False,
+                    'error': f'Empaque ya existe en la estantería pendiente'
+                }), 400
+
+            pendiente = EmpaquePendiente(
+                fridge_id=fridge_id,
+                epc=venta_pendiente.epc,
+                id_empaque=venta_pendiente.id_empaque,
+                estado='pendiente'
+            )
+            db.session.add(pendiente)
+            logger.info(f"Empaque devuelto a estantería pendiente: {venta_pendiente.epc or f'ID:{venta_pendiente.id_empaque}'}")
+
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'No se puede devolver empaque con estado {venta_pendiente.estado}'
+            }), 400
+
+        # Eliminar la venta pendiente
+        db.session.delete(venta_pendiente)
         db.session.commit()
 
         return jsonify({
             'success': True,
-            'message': f'Producto marcado como devuelto: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
+            'message': f'Producto devuelto a la nevera: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
         })
 
     except Exception as e:
