@@ -434,16 +434,30 @@
                                             <td>{{ venta.product_name }}</td>
                                             <td class="text-center">{{ venta.peso_nominal_g || '-' }}</td>
                                             <td class="text-center">
-                                                <span class="badge bg-warning text-dark">{{ venta.estado }}</span>
+                                                <span class="badge" :class="{
+                                                    'bg-warning text-dark': venta.estado === 'pendiente',
+                                                    'bg-success': venta.estado === 'validado',
+                                                    'bg-info': venta.estado === 'devuelto',
+                                                    'bg-secondary': venta.estado === 'liquidado'
+                                                }">
+                                                    {{ venta.estado }}
+                                                </span>
                                             </td>
                                             <td class="text-center">{{ formatDate(venta.created_at) }}</td>
                                             <td class="text-end">
-                                                <button class="btn btn-sm btn-outline-primary"
+                                                <button v-if="venta.estado === 'pendiente' || venta.estado === 'validado'" class="btn btn-sm btn-outline-primary me-1"
                                                     @click="devolverVentaPendiente(venta)"
                                                     :disabled="!selectedFridge.is_door_open || processingAction"
                                                     :class="{ 'disabled': processingAction }">
                                                     <span v-if="processingAction && venta.id === processingEmpaqueId" class="spinner-border spinner-border-sm me-1" role="status"></span>
                                                     <i class="bi bi-arrow-left"></i> Devolver a la Nevera
+                                                </button>
+                                                <button v-if="venta.estado === 'devuelto'" class="btn btn-sm btn-outline-success me-1"
+                                                    @click="validarVentaDevuelta(venta)"
+                                                    :disabled="!selectedFridge.is_door_open || processingAction"
+                                                    :class="{ 'disabled': processingAction }">
+                                                    <span v-if="processingAction && venta.id === processingEmpaqueId" class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                                    <i class="bi bi-check-circle"></i> Validar
                                                 </button>
                                             </td>
                                         </tr>
@@ -1105,6 +1119,35 @@
                 }
             };
 
+            const validarVentaDevuelta = async (venta) => {
+                if (!selectedFridge.value || !selectedFridge.value.is_door_open || processingAction.value) return;
+                const identifier = venta.epc || `ID:${venta.id_empaque}`;
+                if (!confirm(`¿Validar venta devuelta ${identifier}?`)) return;
+
+                processingAction.value = true;
+                processingEmpaqueId.value = venta.id;
+
+                try {
+                    const r = await fetch(`/api/fridges/${selectedFridgeId.value}/ventas-pendientes/${venta.id}/validar`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' }
+                    });
+                    const d = await r.json();
+                    if (d.success) {
+                        await loadProducts(selectedFridgeId.value);
+                        displayToast('Producto Validado', d.message, 'bg-success text-white');
+                    } else {
+                        error.value = d.error;
+                    }
+                } catch(e) {
+                    error.value = 'Error de conexión';
+                } finally {
+                    processingAction.value = false;
+                    processingEmpaqueId.value = null;
+                }
+            };
+
+
+
             const devolverVentaPendiente = async (venta) => {
                 if (!selectedFridge.value || !selectedFridge.value.is_door_open || processingAction.value) return;
                 const identifier = venta.epc || `ID:${venta.id_empaque}`;
@@ -1299,7 +1342,7 @@
                 selectFridge, openActivationModal, closeActivationModal, doActivation,
                 toggleDoor, updateTemperature,
                 deleteEmpaque, venderEmpaque, devolverVentaPendiente, addEmpaque, openAddProductModal, closeAddProductModal,
-                manualSync, validatePendingPackages, refreshAll, saveWeightAdjustment, formatDate, displayToast
+                manualSync, validatePendingPackages, refreshAll, saveWeightAdjustment, formatDate, displayToast, validarVentaDevuelta
             };
         }
     }).mount('#app');

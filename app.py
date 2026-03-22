@@ -729,13 +729,13 @@ def update_door(fridge_id):
             if fridge_id in active_timers:
                 active_timers[fridge_id]['timer'].cancel()
             
-            # Iniciar nuevo timer de 60 segundos
-            timer = threading.Timer(60.0, run_background_liquidation, args=[fridge.fridge_id])
+            # Iniciar nuevo timer de 30 segundos
+            timer = threading.Timer(30.0, run_background_liquidation, args=[fridge.fridge_id])
             timer.start()
-            expires_at = int(time.time()) + 60
+            expires_at = int(time.time()) + 30
             active_timers[fridge_id] = {'timer': timer, 'expires_at': expires_at}
             response_data['liquidation_expires_at'] = expires_at
-            logger.info(f"Temporizador de liquidación INICIADO para {fridge_id} (60s)")
+            logger.info(f"Temporizador de liquidación INICIADO para {fridge_id} (30s)")
 
     # Si se cierra la puerta, validar empaques pendientes si hay
     if not is_door_open:
@@ -1084,7 +1084,7 @@ def vender_empaque(fridge_id, empaque_id):
 @app.route('/api/fridges/<fridge_id>/ventas-pendientes/<venta_id>/devolver', methods=['POST'])
 def devolver_venta_pendiente(fridge_id, venta_id):
     """
-    Devuelve una venta pendiente a la estantería.
+    Cambia el estado de una venta pendiente de 'pendiente' o 'validado' a 'devuelto'.
     Solo funciona si la puerta está ABIERTA.
     """
     fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
@@ -1120,25 +1120,14 @@ def devolver_venta_pendiente(fridge_id, venta_id):
             producto_name = producto_global.name
 
     try:
-        # Crear empaque de vuelta en la estantería
-        empaque = Empaque(
-            fridge_id=fridge_id,
-            producto_global_id=venta_pendiente.producto_global_id,
-            epc=venta_pendiente.epc,
-            id_empaque=venta_pendiente.id_empaque,
-            peso_nominal_g=venta_pendiente.peso_nominal_g
-        )
-
-        db.session.add(empaque)
-
-        # Eliminar la venta pendiente
-        db.session.delete(venta_pendiente)
+        # Cambiar el estado de la venta pendiente a 'devuelto' independientemente del estado anterior
+        venta_pendiente.estado = 'devuelto'
 
         db.session.commit()
 
         return jsonify({
             'success': True,
-            'message': f'Producto devuelto a estantería: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
+            'message': f'Producto marcado como devuelto: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
         })
 
     except Exception as e:
@@ -1150,15 +1139,22 @@ def devolver_venta_pendiente(fridge_id, venta_id):
         }), 500
 
 
+
+
 def process_liquidation_logic(fridge_id):
     """Lógica central para procesar las ventas pendientes hacia la API real."""
     fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
     if not fridge:
         return False, 'Nevera no encontrada', [], [], 404
 
-    ventas = VentaPendiente.query.filter_by(fridge_id=fridge_id).all()
+    # Solo procesar ventas pendientes que estén en estado 'pendiente'
+    ventas = VentaPendiente.query.filter(
+        (VentaPendiente.fridge_id == fridge_id) &
+        (VentaPendiente.estado == 'pendiente')  # Solo procesar ventas pendientes normales, no las validadas/devueltas
+    ).all()
+    
     if not ventas:
-        return True, 'No hay ventas pendientes', [], [], 200
+        return True, 'No hay ventas pendientes para liquidar', [], [], 200
 
     empaques_payload = []
     for v in ventas:
@@ -1179,14 +1175,15 @@ def process_liquidation_logic(fridge_id):
 
         for p in procesados:
             epc, id_emp = p.get('epc'), p.get('id_empaque')
-            v_to_delete = None
+            v_to_update = None
             if epc:
-                v_to_delete = VentaPendiente.query.filter_by(fridge_id=fridge_id, epc=epc).first()
-            if not v_to_delete and id_emp:
-                v_to_delete = VentaPendiente.query.filter_by(fridge_id=fridge_id, id_empaque=id_emp).first()
+                v_to_update = VentaPendiente.query.filter_by(fridge_id=fridge_id, epc=epc).first()
+            if not v_to_update and id_emp:
+                v_to_update = VentaPendiente.query.filter_by(fridge_id=fridge_id, id_empaque=id_emp).first()
             
-            if v_to_delete:
-                db.session.delete(v_to_delete)
+            if v_to_update:
+                # Cambiar estado a 'liquidado' en lugar de eliminar
+                v_to_update.estado = 'liquidado'
                 
         db.session.commit()
         return True, api_response.get('message', 'Ventas liquidadas con éxito'), procesados, no_procesados, status
@@ -1204,6 +1201,63 @@ def run_background_liquidation(fridge_id):
         finally:
             if fridge_id in active_timers:
                 del active_timers[fridge_id]
+
+
+@app.route('/api/fridges/<fridge_id>/ventas-pendientes/<venta_id>/validar', methods=['POST'])
+def validar_venta_devuelta(fridge_id, venta_id):
+    """
+    Cambia el estado de una venta pendiente de 'devuelto' a 'validado'.
+    Esta función se llama cuando el backend cambia el estado de 4 a 3.
+    """
+    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
+
+    if not fridge:
+        return jsonify({
+            'success': False,
+            'error': 'Nevera no encontrada'
+        }), 404
+
+    venta_pendiente = VentaPendiente.query.filter_by(id=venta_id, fridge_id=fridge_id).first()
+
+    if not venta_pendiente:
+        return jsonify({
+            'success': False,
+            'error': 'Venta pendiente no encontrada'
+        }), 404
+
+    # Obtener el nombre del producto antes de la transacción
+    producto_name = "Producto desconocido"
+    if venta_pendiente.producto_global:
+        producto_name = venta_pendiente.producto_global.name
+    elif venta_pendiente.producto_global_id:
+        # Si no está cargado, buscar el producto
+        producto_global = ProductoGlobal.query.get(venta_pendiente.producto_global_id)
+        if producto_global:
+            producto_name = producto_global.name
+
+    try:
+        # Cambiar el estado de la venta pendiente de 'devuelto' a 'validado'
+        if venta_pendiente.estado == 'devuelto':
+            venta_pendiente.estado = 'validado'
+            db.session.commit()
+
+            return jsonify({
+                'success': True,
+                'message': f'Producto marcado como validado: {venta_pendiente.epc or f"ID:{venta_pendiente.id_empaque}"} - {producto_name}'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'El estado actual de la venta es {venta_pendiente.estado}, no se puede validar directamente'
+            }), 400
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error al validar venta devuelta: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al validar producto: {str(e)}'
+        }), 500
 
 
 @app.route('/api/fridges/<fridge_id>/liquidar-ventas', methods=['POST'])
@@ -1258,53 +1312,94 @@ def manual_sync(fridge_id):
 
     # Procesar la respuesta y sincronizar empaques
     synced_empaques = 0
+    synced_pendientes_pago = 0
 
-    if api_response.get('success') and 'empaques' in api_response:
-        # Sincronizar empaques
-        for emp in api_response['empaques']:
-            # Buscar si ya existe
-            existing = Empaque.query.filter(
-                (Empaque.fridge_id == fridge.fridge_id) &
-                (
-                    (Empaque.epc == emp.get('epc')) |
-                    (Empaque.id_empaque == emp.get('id_empaque'))
-                )
-            ).first()
-
-            if not existing:
-                # Buscar producto global por id_producto
-                producto_global = ProductoGlobal.query.filter_by(product_id=str(emp['id_producto'])).first()
-                if not producto_global:
-                    # Si no existe, crear placeholder
-                    logger.warning(f"Producto global {emp['id_producto']} no encontrado, creando placeholder...")
-                    producto_global = ProductoGlobal(
-                        product_id=str(emp['id_producto']),
-                        name=f'Producto {emp["id_producto"]}',
-                        description='Creado desde sincronización API',
-                        nominal_weight_g=emp.get('peso_exacto_g')
+    if api_response.get('success'):
+        # Sincronizar empaques regulares
+        if 'empaques' in api_response:
+            for emp in api_response['empaques']:
+                # Buscar si ya existe
+                existing = Empaque.query.filter(
+                    (Empaque.fridge_id == fridge.fridge_id) &
+                    (
+                        (Empaque.epc == emp.get('epc')) |
+                        (Empaque.id_empaque == emp.get('id_empaque'))
                     )
-                    db.session.add(producto_global)
+                ).first()
 
-                # Crear empaque
-                empaque = Empaque(
-                    fridge_id=fridge.fridge_id,
-                    producto_global_id=producto_global.id,
-                    epc=emp.get('epc'),
-                    id_empaque=emp.get('id_empaque'),
-                    peso_nominal_g=emp.get('peso_exacto_g')
-                )
-                db.session.add(empaque)
-                synced_empaques += 1
+                if not existing:
+                    # Buscar producto global por id_producto
+                    producto_global = ProductoGlobal.query.filter_by(product_id=str(emp['id_producto'])).first()
+                    if not producto_global:
+                        # Si no existe, crear placeholder
+                        logger.warning(f"Producto global {emp['id_producto']} no encontrado, creando placeholder...")
+                        producto_global = ProductoGlobal(
+                            product_id=str(emp['id_producto']),
+                            name=f'Producto {emp["id_producto"]}',
+                            description='Creado desde sincronización API',
+                            nominal_weight_g=emp.get('peso_exacto_g')
+                        )
+                        db.session.add(producto_global)
+
+                    # Crear empaque
+                    empaque = Empaque(
+                        fridge_id=fridge.fridge_id,
+                        producto_global_id=producto_global.id,
+                        epc=emp.get('epc'),
+                        id_empaque=emp.get('id_empaque'),
+                        peso_nominal_g=emp.get('peso_exacto_g')
+                    )
+                    db.session.add(empaque)
+                    synced_empaques += 1
+
+        # Sincronizar empaques pendientes de pago
+        if 'empaques_pendiente_pago' in api_response:
+            for emp in api_response['empaques_pendiente_pago']:
+                # Buscar si ya existe como venta pendiente
+                existing_venta = VentaPendiente.query.filter(
+                    (VentaPendiente.fridge_id == fridge.fridge_id) &
+                    (
+                        (VentaPendiente.epc == emp.get('epc')) |
+                        (VentaPendiente.id_empaque == emp.get('id_empaque'))
+                    )
+                ).first()
+
+                if not existing_venta:
+                    # Buscar producto global por id_producto
+                    producto_global = ProductoGlobal.query.filter_by(product_id=str(emp['id_producto'])).first()
+                    if not producto_global:
+                        # Si no existe, crear placeholder
+                        logger.warning(f"Producto global {emp['id_producto']} no encontrado, creando placeholder...")
+                        producto_global = ProductoGlobal(
+                            product_id=str(emp['id_producto']),
+                            name=f'Producto {emp["id_producto"]}',
+                            description='Creado desde sincronización API',
+                            nominal_weight_g=emp.get('peso_exacto_g')
+                        )
+                        db.session.add(producto_global)
+
+                    # Crear venta pendiente con estado 'validado' en lugar de eliminarla
+                    venta_pendiente = VentaPendiente(
+                        fridge_id=fridge.fridge_id,
+                        producto_global_id=producto_global.id,
+                        epc=emp.get('epc'),
+                        id_empaque=emp.get('id_empaque'),
+                        peso_nominal_g=emp.get('peso_exacto_g'),
+                        estado='validado'  # Nuevo estado para indicar que está validado pero pendiente de pago
+                    )
+                    db.session.add(venta_pendiente)
+                    synced_pendientes_pago += 1
 
         # Actualizar timestamp de última sincronización
         fridge.last_sync = datetime.utcnow()
         db.session.commit()
 
-        message = f'Inventario sincronizado: {synced_empaques} empaques agregados'
+        message = f'Inventario sincronizado: {synced_empaques} empaques agregados, {synced_pendientes_pago} empaques pendientes de pago'
         return jsonify({
             'success': True,
             'message': message,
             'synced_empaques': synced_empaques,
+            'synced_pendientes_pago': synced_pendientes_pago,
             'api_response': api_response,
             'status_code': status
         })

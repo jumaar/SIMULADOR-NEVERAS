@@ -269,7 +269,7 @@ class VentaPendiente(db.Model):
     peso_nominal_g = db.Column(db.Float, nullable=True)
 
     # Estado de liquidación
-    estado = db.Column(db.String(20), nullable=False, default='pendiente')  # pendiente, liquidado, error
+    estado = db.Column(db.String(20), nullable=False, default='pendiente')  # pendiente, liquidado, error, devuelto, validado
 
     # Timestamps
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
