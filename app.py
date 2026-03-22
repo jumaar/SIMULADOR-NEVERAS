@@ -724,11 +724,12 @@ def update_door(fridge_id):
             del active_timers[fridge_id]
             logger.info(f"Temporizador de liquidación CANCELADO para {fridge_id} (puerta abierta)")
     else:
-        ventas_count = VentaPendiente.query.filter_by(fridge_id=fridge.fridge_id).count()
-        if ventas_count > 0:
+        # Solo iniciar temporizador si hay ventas pendientes (estado 'pendiente')
+        ventas_pendientes_count = VentaPendiente.query.filter_by(fridge_id=fridge.fridge_id, estado='pendiente').count()
+        if ventas_pendientes_count > 0:
             if fridge_id in active_timers:
                 active_timers[fridge_id]['timer'].cancel()
-            
+
             # Iniciar nuevo timer de 30 segundos
             timer = threading.Timer(30.0, run_background_liquidation, args=[fridge.fridge_id])
             timer.start()
