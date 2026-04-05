@@ -974,44 +974,6 @@ def delete_empaque(fridge_id, empaque_id):
         'message': f'Empaque eliminado: {empaque.epc or f"ID:{empaque.id_empaque}"}'
     })
 
-
-@app.route('/api/fridges/<fridge_id>/empaques-pendientes/<pendiente_id>', methods=['DELETE'])
-def delete_empaque_pendiente(fridge_id, pendiente_id):
-    """
-    Elimina un empaque pendiente del inventario.
-    Solo funciona si la puerta está ABIERTA.
-    """
-    fridge = Fridge.query.filter_by(fridge_id=fridge_id).first()
-
-    if not fridge:
-        return jsonify({
-            'success': False,
-            'error': 'Nevera no encontrada'
-        }), 404
-
-    if not fridge.is_door_open:
-        return jsonify({
-            'success': False,
-            'error': 'La puerta debe estar ABIERTA para modificar el inventario'
-        }), 403
-
-    pendiente = EmpaquePendiente.query.filter_by(id=pendiente_id, fridge_id=fridge_id).first()
-
-    if not pendiente:
-        return jsonify({
-            'success': False,
-            'error': 'Empaque pendiente no encontrado'
-        }), 404
-
-    db.session.delete(pendiente)
-    db.session.commit()
-
-    return jsonify({
-        'success': True,
-        'message': f'Empaque pendiente eliminado: {pendiente.epc or f"ID:{pendiente.id_empaque}"}'
-    })
-
-
 @app.route('/api/fridges/<fridge_id>/empaques/<empaque_id>/vender', methods=['POST'])
 def vender_empaque(fridge_id, empaque_id):
     """
@@ -1620,10 +1582,11 @@ if __name__ == '__main__':
     
     # Iniciar servidor
     port = int(os.environ.get('PORT', 5001))
-    debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
     logger.info(f"Iniciando simulador en puerto {port}")
     logger.info(f"API Base URL: {app.config['API_BASE_URL']}")
+    logger.info(f"Debug mode: {debug}")
     
     app.run(
         host='0.0.0.0',
